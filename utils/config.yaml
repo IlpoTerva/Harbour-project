@@ -1,0 +1,8 @@
+models:  
+  model_path: "models/license_plate_model.pt"
+  model_path_onnx: "models/license_plate_model.onnx"
+  whisper_model_path: "models/whisper_small/"
+  fast_ocr_model_path: "models/cct_s_v2_global_model_config.yaml"
+  piper_model_path: "models/en_US-hfc_female-medium.onnx"
+database:
+  db_path: "utils/license_plates.db"

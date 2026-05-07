@@ -5,6 +5,7 @@ from kokoro import KPipeline
 from faster_whisper import WhisperModel
 from typing import Dict, Any, Optional
 from piper import PiperVoice
+from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +87,12 @@ class Speaker:
 class LanguageModel:
     """Prompt generation and plate parsing logic.
 
-    Currently rule-based. Swap `generate_prompt` and `parse_plate_from_transcription`
-    for llama-cpp-python / mlx / transformers calls once the Llama 3.2 1B model
-    is deployed on the Pi — the interface stays the same.
     """
+    def __init__(self) -> None:
+        self.model = Llama(model_path="models/llama-3.2-1B-Instruct-Q4_K_M.gguf", n_ctx=2048, verbose=False)# NOTE: n_gpu_layers=-1 
 
-    def generate_prompt(self, vision_output: Optional[Dict[str, Any]]) -> str:
-        """Return a spoken prompt that gives the driver helpful context."""
+    def generic_prompt(self, vision_output: Optional[Dict[str, Any]]) -> str:
+        """Generate a spoken prompt based on `vision_output` to ask the driver for their plate."""
         if vision_output and vision_output.get("conf", 0) >= 0.5:
             plate = vision_output["plate"]
             return (
@@ -101,14 +101,46 @@ class LanguageModel:
             )
         return "I could not read your licence plate. Please say it out loud now."
 
-    def parse_plate_from_transcription(self, transcription: str) -> str:
-        """Extract a plate string from free-form driver speech.
+    def driver_instructions_prompt(self, inDatabase: bool, read_plate: str = None) -> str:
+        """Generate a spoken prompt to instruct the driver on where to go next."""
+        if inDatabase:
+            return "Thank you. Your vehicle is registered in our database. Please proceed to the gate."
+        else:
+            return f"Thank you. However, I couldn't find your vehicle in our database. Is the plate you provided, {read_plate}, correct? If not, please say it again."        
 
-        Placeholder: strips whitespace and upper-cases the raw transcription.
-        Replace with a Llama call to handle natural phrasing such as
-        'my plate is Romeo Kilo six one two alpha lima'.
-        """
-        return transcription.strip().upper()
+    def parse_plate_from_transcription(self, transcription: str) -> str:
+        prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+            You are a harbor gate assistant. Extract ONLY the alphanumeric license plate from the text.
+            Convert NATO phonetic alphabet (Alpha, Bravo, etc.) to single characters.
+            If no plate is found, return 'UNKNOWN'.
+            Output format: ONLY the string.<|eot_id|>
+            <|start_header_id|>user<|end_header_id|>
+            Driver said: "{transcription}"
+            Extracted Plate:<|eot_id|>
+            <|start_header_id|>assistant<|end_header_id|>"""
+
+        try:
+            # temperature=0.1 makes the model more deterministic (less creative)
+            response = self.model(
+                prompt, 
+                max_tokens=20, 
+                stop=["<|eot_id|>", "\n"], 
+                temperature=0.1
+            )
+            
+            result = response["choices"][0]["text"].strip()
+            
+            # Post-processing: ensure it's uppercase and has no spaces
+            clean_plate = result.upper().replace(" ", "").replace(".", "")
+            
+            logger.info(f"LLM Parsed '{transcription}' into '{clean_plate}'")
+            return clean_plate
+
+        except Exception as e:
+            logger.error(f"LLM Parsing failed: {e}")
+            return transcription.strip().upper()
+    
+    
 
 
 class AudioPipeline:
@@ -167,3 +199,8 @@ class AudioPipeline:
         result["plate"] = plate
         logger.info(f"Driver-provided plate: {plate!r}")
         return result
+    
+    def driver_instructions(self, inDatabase: bool, read_plate: str = None) -> None:
+        """Generate and speak instructions for the driver based on whether their plate is in the database."""
+        prompt = self.language_model.driver_instructions_prompt(inDatabase, read_plate)
+        self.speak(prompt)

@@ -162,7 +162,16 @@ class Orchestrator:
         audio_result = self.audio_pipeline.request_plate_from_driver(vision_output)
         spoken_plate = audio_result["plate"]
         db_entry = self.lookup_plate(spoken_plate)
+
+        if db_entry:
+            logger.info(f"Driver said {spoken_plate!r} — found in manifest.")
+            self.audio_pipeline.driver_instructions(inDatabase=True)
+        else:
+            logger.info(f"Driver said {spoken_plate!r} — NOT found in manifest.")
+            self.audio_pipeline.driver_instructions(inDatabase=False, read_plate=spoken_plate)
         return db_entry, spoken_plate
+    
+    
 
 
 # ── GUI ───────────────────────────────────────────────────────────────────────

@@ -6,3 +6,5 @@ models:
   piper_model_path: "models/en_US-hfc_female-medium.onnx"
 database:
   db_path: "utils/license_plates.db"
+images:
+  path: "database_imgs/"

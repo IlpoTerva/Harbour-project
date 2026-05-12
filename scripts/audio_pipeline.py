@@ -77,7 +77,7 @@ class LanguageModel:
     def __init__(self) -> None:
         self.model = Llama(model_path="models/llama-3.2-1B-Instruct-Q4_K_M.gguf", n_ctx=2048, verbose=False)# NOTE: n_gpu_layers=-1 
 
-    def generic_prompt(self, vision_output: Optional[Dict[str, Any]]) -> str:
+    def ask_license_plate(self, vision_output: Optional[Dict[str, Any]]) -> str:
         """Generate a spoken prompt based on `vision_output` to ask the driver for their plate."""
         if vision_output and vision_output.get("conf", 0) >= 0.5:
             plate = vision_output["plate"]
@@ -177,7 +177,7 @@ class AudioPipeline:
                 "audio":         np.ndarray  – recorded audio buffer
             }
         """
-        prompt = self.language_model.generate_prompt(vision_output)
+        prompt = self.language_model.ask_license_plate(vision_output)
         self.speak(prompt)
 
         result = self.listen_and_transcribe(duration)

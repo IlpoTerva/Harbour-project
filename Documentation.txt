@@ -1,1 +1,11 @@
 Documentation for project
+
+TODO
+Testing the full pipeline that the program flow works correctly.
+Now vision works (when yolo detects the license plate).
+
+NOTES
+Voice assistant questions are correct.
+Known issues 
+    - LLM parsing returns alwasy '' eventhough the transcript has correct words (license plate or words in general).
+      * This causes the program flow always alert worker and the program does not continue as it should

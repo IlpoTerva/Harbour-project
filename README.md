@@ -4,6 +4,11 @@
 
 Optimized for the **NVIDIA Jetson Orin NX**, this project integrates state-of-the-art vision, speech, and reasoning models to interact with its environment autonomously.
 
+## 🚀 Project Overview
+
+The Harbour Agent acts as an intelligent observer and interlocutor. By combining local Large Language Models (LLMs) with high-speed vision and audio pipelines, it can "see" objects and license plates, "hear" verbal commands, and "speak" back to the user with minimal latency. 
+The primary objective is to fully automate the harbor gate entry process. By autonomously scanning license plates, verifying driver identities via voice, and instantly assigning cargo unloading docks, the system drastically reduces the need for manual checkpoints and keeps logistics moving smoothly.
+
 ---
 
 # 🛠️ Core Technology Stack

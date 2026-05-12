@@ -1,3 +1,5 @@
 models/
 database_imgs/
 __pycache__
+.pytest_cache/
+.vscode/

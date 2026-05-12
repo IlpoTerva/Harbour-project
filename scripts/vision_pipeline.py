@@ -1,6 +1,5 @@
 import logging
 import numpy as np
-import cv2
 from ultralytics import YOLO
 from fast_plate_ocr import LicensePlateRecognizer
 from typing import Dict, Any, Optional

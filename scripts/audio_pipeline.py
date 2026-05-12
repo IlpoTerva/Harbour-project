@@ -1,7 +1,6 @@
 import logging
 import numpy as np
 import sounddevice as sd
-from kokoro import KPipeline
 from faster_whisper import WhisperModel
 from typing import Dict, Any, Optional
 from piper import PiperVoice
@@ -9,8 +8,6 @@ from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
 
-# Kokoro always synthesises at 24 kHz regardless of input.
-KOKORO_SAMPLE_RATE = 24_000
 
 
 class Listener:
@@ -46,38 +43,27 @@ class Listener:
 class Speaker:
     """Converts text to speech with Kokoro and plays it back synchronously."""
 
-    def __init__(self,conf: Dict[str, Any], kokoro=False) -> None:
+    def __init__(self,conf: Dict[str, Any]) -> None:
         # lang_code='a' → American English; swap to 'e' for Spanish, 'p' for Portuguese, etc.
-        if kokoro:
-            self.pipeline: KPipeline = KPipeline(lang_code="a", device="cpu")
-            self.use_kokoro = True
-        else:
-            self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])
-            self.use_kokoro = False
+ 
+        self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])           
 
-    def speak(self, text: str, voice: str = "af_heart", speed: float = 1.0) -> None:
+    def speak(self, text: str) -> None:
         """Synthesise `text` and play it, blocking until playback is finished.
 
         Kokoro yields (graphemes, phonemes, audio_chunk) tuples; we concatenate
         all chunks before handing them to sounddevice so there are no gaps.
         """
-        if self.use_kokoro:
-            chunks = [audio for _, _, audio in self.pipeline(text, voice=voice, speed=speed)]
-            if not chunks:
-                logger.warning("TTS produced no audio — is the text empty?")
-                return
-            full_audio = np.concatenate(chunks)
-            sample_rate = KOKORO_SAMPLE_RATE
-        else:
-            audio_data = []
-            for chunk in self.pipeline.synthesize(text):
-                audio_chunk = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
-                audio_data.append(audio_chunk)
-            if not audio_data:
-                logger.warning("TTS produced no audio — is the text empty?")
-                return
-            full_audio = np.concatenate(audio_data)
-            sample_rate = self.pipeline.config.sample_rate
+
+        audio_data = []
+        for chunk in self.pipeline.synthesize(text):
+            audio_chunk = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
+            audio_data.append(audio_chunk)
+        if not audio_data:
+            logger.warning("TTS produced no audio — is the text empty?")
+            return
+        full_audio = np.concatenate(audio_data)
+        sample_rate = self.pipeline.config.sample_rate
         if full_audio.dtype == np.int16:
             full_audio = full_audio.astype(np.float32) / 32768.0
         sd.play(full_audio, samplerate=sample_rate)

@@ -1,4 +1,6 @@
 import os
+
+import cv2
 from scripts.orchestrator import Orchestrator, read_config, create_mock_db
 
 class CLI:
@@ -6,6 +8,7 @@ class CLI:
 
     def __init__(self,orchestrator: Orchestrator, images_path: str) -> None:
         self.orchestrator = orchestrator
+        self.images_path = images_path
         self.images = os.listdir(images_path)
     def choose_image(self):
         print("Available images:")
@@ -21,8 +24,10 @@ class CLI:
     def run(self):
         while True:
             image_path = self.choose_image()
-            print(f"Processing {image_path}...")
-            self.orchestrator.read_plate(image_path)
+            print(f"Processing {os.path.join(self.images_path, image_path)}...")
+            raw_image = cv2.imread(os.path.join(self.images_path, image_path))
+            result = self.orchestrator.read_plate(raw_image)
+            print(f"Vision result: {result}")
             cont = input("Do you want to process another image? (y/n): ")
             if cont.lower() != 'y':
                 break

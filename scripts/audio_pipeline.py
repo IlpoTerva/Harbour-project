@@ -1,4 +1,5 @@
 import logging
+import re
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
@@ -7,6 +8,24 @@ from piper import PiperVoice
 from llama_cpp import Llama
 
 logger = logging.getLogger(__name__)
+
+# ── Plate parsing constants ───────────────────────────────────────────────────
+
+# Regex that matches a valid plate: 3–9 uppercase alphanumeric characters.
+# European plates are typically 5-8 chars; 3 is the floor to avoid false hits.
+_PLATE_RE = re.compile(r'[A-Z0-9]{3,9}')
+
+# NATO phonetic alphabet + spoken digit words → single character
+_NATO = {
+    "alpha":"A", "bravo":"B", "charlie":"C", "delta":"D", "echo":"E",
+    "foxtrot":"F", "golf":"G", "hotel":"H", "india":"I", "juliet":"J",
+    "kilo":"K", "lima":"L", "mike":"M", "november":"N", "oscar":"O",
+    "papa":"P", "quebec":"Q", "romeo":"R", "sierra":"S", "tango":"T",
+    "uniform":"U", "victor":"V", "whiskey":"W", "x-ray":"X", "xray":"X",
+    "yankee":"Y", "zulu":"Z",
+    "zero":"0", "one":"1", "two":"2", "three":"3", "four":"4",
+    "five":"5", "six":"6", "seven":"7", "eight":"8", "nine":"9",
+}
 
 
 # ── Listener ──────────────────────────────────────────────────────────────────
@@ -100,23 +119,65 @@ class LanguageModel:
         )
 
     def _call(self, prompt: str, max_tokens: int, temperature: float) -> str:
-        """Run the model and return the stripped text response."""
+        """Run the model and return the first non-empty line of the response.
+
+        "\n" is intentionally NOT in the stop list because small models (1B)
+        often emit a leading newline before the actual answer. Stopping there
+        gives an empty string. Instead we let the model run to <|eot_id|> and
+        take the first meaningful line ourselves.
+        """
         response = self.model(
             prompt,
             max_tokens=max_tokens,
-            stop=["<|eot_id|>", "\n"],
+            stop=["<|eot_id|>"],
             temperature=temperature,
         )
-        return response["choices"][0]["text"].strip()
+        raw = response["choices"][0]["text"]
+        first_line = next((l.strip() for l in raw.split("\n") if l.strip()), raw.strip())
+        return first_line
 
     # ── Task 1: Plate extraction ──────────────────────────────────────────────
 
     def parse_plate_from_transcription(self, transcription: str) -> str:
         """Extract the alphanumeric plate from free-form driver speech.
 
-        Handles NATO phonetic alphabet (Romeo Kilo six one two → RK612).
-        Falls back to uppercased raw transcription if the LLM call fails.
+        Four-layer approach (fastest / most reliable first):
+
+        1. Direct match  — Whisper already returned a bare plate ("LM633BD").
+                           No LLM needed; just clean and return.
+        2. NATO words    — every word is a NATO callsign or spoken digit.
+                           Deterministic conversion, no LLM needed.
+        3. LLM           — natural language ("my plate is LM633BD") or mixed
+                           input that layers 1-2 cannot handle.
+        4. Regex fallback — LLM returned empty or garbage; pull the longest
+                           alphanumeric run from the raw transcription.
         """
+        text = transcription.strip()
+
+        # ── Layer 1: direct plate match ───────────────────────────────────────
+        direct = re.sub(r'[^A-Z0-9]', '', text.upper())
+        if _PLATE_RE.fullmatch(direct):
+            logger.info(f"Plate direct match (no LLM): {direct!r}")
+            return direct
+
+        # ── Layer 2: NATO phonetic word-by-word conversion ────────────────────
+        nato_chars = []
+        all_nato = True
+        for word in text.lower().split():
+            if word in _NATO:
+                nato_chars.append(_NATO[word])
+            elif len(word) == 1 and word.isalnum():
+                nato_chars.append(word.upper())
+            else:
+                all_nato = False
+                break
+        if all_nato and nato_chars:
+            nato_plate = "".join(nato_chars)
+            if _PLATE_RE.fullmatch(nato_plate):
+                logger.info(f"Plate via NATO: {text!r} -> {nato_plate!r}")
+                return nato_plate
+
+        # ── Layer 3: LLM for natural-language input ───────────────────────────
         system = (
             "You are a harbor gate assistant. "
             "Extract ONLY the alphanumeric license plate from the driver's speech. "
@@ -125,20 +186,29 @@ class LanguageModel:
             "Hotel=H, India=I, Juliet=J, Kilo=K, Lima=L, Mike=M, November=N, "
             "Oscar=O, Papa=P, Quebec=Q, Romeo=R, Sierra=S, Tango=T, "
             "Uniform=U, Victor=V, Whiskey=W, X-ray=X, Yankee=Y, Zulu=Z. "
-            "Digits are spoken as individual numbers (six=6, one=1, two=2). "
+            "Digits: zero=0 one=1 two=2 three=3 four=4 five=5 six=6 seven=7 eight=8 nine=9. "
             "If no plate can be found, return UNKNOWN. "
-            "Output ONLY the plate string — no spaces, no punctuation, no explanation."
+            "Output ONLY the plate string, no spaces, no punctuation, no explanation."
         )
-        user = 'Driver said: "' + transcription + '"\nExtracted plate:'
-
+        user = 'Driver said: "' + text + '"' + '\nExtracted plate:'
         try:
             raw = self._call(self._prompt(system, user), max_tokens=20, temperature=0.1)
-            clean = raw.upper().replace(" ", "").replace(".", "").replace("-", "")
-            logger.info(f"Plate parsed: {transcription!r} → {clean!r}")
-            return clean
+            clean = re.sub(r'[^A-Z0-9]', '', raw.upper())
+            if clean and clean != "UNKNOWN":
+                logger.info(f"Plate via LLM: {text!r} -> {clean!r}")
+                return clean
         except Exception:
-            logger.exception("LLM plate parsing failed — using raw transcription as fallback.")
-            return transcription.strip().upper().replace(" ", "")
+            logger.exception("LLM plate parsing failed.")
+
+        candidates = _PLATE_RE.findall(re.sub(r'\s+', '', text.upper()))
+        if candidates:
+            best = max(candidates, key=len)
+            logger.info(f"Plate via regex fallback: {text!r} -> {best!r}")
+            return best
+
+        logger.warning(f"Could not extract plate from: {text!r}")
+        return "UNKNOWN"
+
 
     # ── Task 2: Yes/No classification ────────────────────────────────────────
 
@@ -190,7 +260,6 @@ class LanguageModel:
             logger.exception("LLM name extraction failed — using raw transcription as fallback.")
             return transcription.strip().title()
 
-    # ── Task 4: Fuzzy name matching ───────────────────────────────────────────
 
     def verify_name_similarity(self, db_name: str, spoken_name: str) -> bool:
         """Fuzzy-match a spoken name against the name on file.

@@ -1,16 +1,10 @@
-import os
 import logging
 import sqlite3
-import threading
 import numpy as np
-import cv2
-import tkinter as tk
-from tkinter import filedialog, scrolledtext
-from PIL import Image, ImageTk
 from typing import Dict, Any, Optional, Tuple
 
-from vision_pipeline import VisionPipeline, read_config
-from audio_pipeline import AudioPipeline
+from scripts.vision_pipeline import VisionPipeline, read_config
+from scripts.audio_pipeline import AudioPipeline
 import warnings
 
 warnings.filterwarnings("ignore")

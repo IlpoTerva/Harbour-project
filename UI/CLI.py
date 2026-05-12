@@ -13,7 +13,7 @@ class CLI:
             print(f"{idx + 1}. {img}")
         choice = int(input("Select an image by number: ")) - 1
         if 0 <= choice < len(self.images):
-            return os.path.join("data/images", self.images[choice])
+            return os.path.join(self.images[choice])
         else:
             print("Invalid choice. Please try again.")
             return self.choose_image()
@@ -22,7 +22,7 @@ class CLI:
         while True:
             image_path = self.choose_image()
             print(f"Processing {image_path}...")
-            self.orchestrator.process_image(image_path)
+            self.orchestrator.read_plate(image_path)
             cont = input("Do you want to process another image? (y/n): ")
             if cont.lower() != 'y':
                 break

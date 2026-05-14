@@ -303,10 +303,10 @@ class AudioPipeline:
 
     Public interface used by Orchestrator:
         request_plate_from_driver(vision_output)  → dict  (plate + transcription)
-        confirm_plate_with_driver(plate)           → bool
-        request_driver_name()                      → str   (parsed name)
-        give_dock_instructions(db_entry)           → None
-        speak(text)                                → None  (direct TTS for alerts)
+        confirm_plate_with_driver(plate)          → bool
+        request_driver_name()                     → str   (parsed name)
+        give_dock_instructions(db_entry)          → None
+        speak(text)                               → None  (direct TTS for alerts)
     """
 
     def __init__(self, conf: Dict[str, Any]) -> None:

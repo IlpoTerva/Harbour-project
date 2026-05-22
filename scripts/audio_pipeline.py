@@ -54,7 +54,7 @@ class Listener:
         return audio.flatten()
 
     def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(audio, beam_size=5)
+        segments, _ = self.model.transcribe(audio, language="en", beam_size=5)
         text = " ".join(seg.text.strip() for seg in segments)
         logger.info(f"Transcribed: {text!r}")
         return text

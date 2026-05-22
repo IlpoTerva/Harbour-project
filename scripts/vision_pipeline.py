@@ -16,10 +16,14 @@ def read_config(path: str) -> Dict[str, Any]:
 
 class VisionPipeline:
     def __init__(self, config: Dict[str, Any], device: str = "cpu", onnx: bool = False) -> None:
+        self.onnx = onnx
+        self.device = device
         if onnx:
             self.vision_model: YOLO = YOLO(model=config["models"]["model_path_onnx"], task="detect")
         else:
             self.vision_model: YOLO = YOLO(model=config["models"]["model_path"], task="detect")
+            self.vision_model.to(device)
+
         self.recognizer: LicensePlateRecognizer = LicensePlateRecognizer(
             hub_ocr_model="cct-s-v2-global-model", device=device
         )
@@ -51,7 +55,7 @@ class VisionPipeline:
                 visual  (np.ndarray)   annotated image with YOLO bounding box drawn
             or None if no plate was detected in the image.
         """
-        results = self.vision_model(image)
+        results = self.vision_model(image, device=self.device if self.onnx else None)
 
         if not results or len(results[0].boxes) == 0:
             logger.info("No license plate detected.")

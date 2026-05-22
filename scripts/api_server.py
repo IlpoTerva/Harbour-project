@@ -14,6 +14,27 @@ New dependencies (add to requirements):
     python-multipart
 """
 
+#Shutting down gracefully on SIGINT is tricky with uvicorn
+import signal, threading, os
+
+def _force_exit_after(seconds: int = 8) -> None:
+    """Called in a daemon thread — kills the process if shutdown hangs."""
+    import time
+    time.sleep(seconds)
+    logger.warning(f"Shutdown still hanging after {seconds}s — forcing exit.")
+    os._exit(1)   # bypasses Python cleanup entirely, kills all threads
+
+def _handle_sigint(sig, frame):
+    logger.info("SIGINT received — starting shutdown (forced exit in 8 s).")
+    t = threading.Thread(target=_force_exit_after, args=(8,), daemon=True)
+    t.start()
+    raise SystemExit(0)   # lets uvicorn lifespan run normally
+
+signal.signal(signal.SIGINT,  _handle_sigint)
+signal.signal(signal.SIGTERM, _handle_sigint)
+
+
+
 import base64
 import io
 import logging
@@ -32,6 +53,9 @@ from scripts.audio_pipeline import LanguageModel, Listener, Speaker
 from scripts.orchestrator import create_mock_db
 from scripts.vision_pipeline import VisionPipeline, read_config
 
+
+
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -46,6 +70,15 @@ _llm: Optional[LanguageModel] = None
 _db: Optional[sqlite3.Connection] = None
 
 
+def get_device() -> str:
+    """Return 'cuda' if CUDAExecutionProvider is available, else 'cpu'."""
+    import onnxruntime as ort
+    providers = ort.get_available_providers()
+    return "cuda" if "CUDAExecutionProvider" in providers else "cpu"
+
+DEVICE = get_device()
+logger.info(f"Using device: {DEVICE}")
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -55,10 +88,15 @@ def _startup() -> None:
     db_path = _config["database"]["db_path"]
     if not os.path.exists(db_path):
         create_mock_db(db_path)
-    _vision = VisionPipeline(config=_config, onnx=True)
-    _listener = Listener(conf=_config)
-    _speaker = Speaker(conf=_config)
-    _llm = LanguageModel(conf=_config)
+    try:
+        _vision = VisionPipeline(config=_config, device=DEVICE, onnx=True)
+        logger.info("VisionPipeline loaded in ONNX mode.")
+    except Exception as e:
+        logger.warning(f"ONNX init failed ({e}), falling back to PyTorch mode.")
+        _vision = VisionPipeline(config=_config,device=DEVICE, onnx=False)
+    _listener = Listener(conf=_config, device=DEVICE)
+    _speaker = Speaker(conf=_config, device=DEVICE)
+    _llm = LanguageModel(conf=_config, device=DEVICE)
     _db = sqlite3.connect(db_path, check_same_thread=False)
     logger.info("All models loaded — server ready.")
 

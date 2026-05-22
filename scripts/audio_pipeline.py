@@ -32,11 +32,12 @@ _NATO = {
 class Listener:
     """Records microphone audio and transcribes it with faster-whisper."""
 
-    def __init__(self, conf: Dict[str, Any], sample_rate: int = 16_000) -> None:
+    def __init__(self, conf: Dict[str, Any], sample_rate: int = 16_000, device: str = "cpu") -> None:
         self.sample_rate = sample_rate
         self.model: WhisperModel = WhisperModel(
             model_size_or_path=conf["models"]["whisper_model_path"],
             device="cpu",
+            compute_type="int8",
         )
 
     def listen(self, duration: int = 5) -> np.ndarray:
@@ -64,8 +65,14 @@ class Listener:
 class Speaker:
     """Converts text to speech with Piper and plays it back synchronously."""
 
-    def __init__(self, conf: Dict[str, Any]) -> None:
-        self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])
+    def __init__(self, conf: Dict[str, Any], device="cpu") -> None:
+        if device == "cuda":
+            self.pipeline = PiperVoice.load(
+                conf["models"]["piper_model_path"],
+                use_cuda=True,
+            )
+        else:  # CPU-only fallback
+            self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])
 
     def speak(self, text: str) -> None:
         import sounddevice as sd
@@ -94,13 +101,21 @@ class LanguageModel:
     GPU note: set n_gpu_layers=-1 once CUDA is confirmed working on the device.
     """
 
-    def __init__(self, conf: Dict[str, Any]) -> None:
-        self.model = Llama(
-            model_path=conf["models"]["llm_model_path"],
-            n_ctx=2048,
-            verbose=False,
-            # n_gpu_layers=-1,  # ← uncomment to offload all layers to GPU
-        )
+    def __init__(self, conf: Dict[str, Any], device="cpu") -> None:
+        if device == "cuda":
+            self.model = Llama(
+                model_path=conf["models"]["llm_model_path"],
+                n_ctx=2048,
+                verbose=False,
+                n_gpu_layers=-1,  # ← uncomment to offload all layers to GPU
+            )
+        else:# CPU-only inference (fallback)
+            self.model = Llama(
+                model_path=conf["models"]["llm_model_path"],
+                n_ctx=2048,
+                verbose=False,
+                # n_gpu_layers=-1,  # ← uncomment to offload all layers to GPU
+            )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

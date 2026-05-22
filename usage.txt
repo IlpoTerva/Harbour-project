@@ -1,0 +1,174 @@
+================================================================================
+  HARBOUR AGENT — CLIENT / SERVER USAGE GUIDE
+  Jetson Orin NX  (server)  +  Laptop  (frontend)
+================================================================================
+
+OVERVIEW
+--------
+The system is split into two parts:
+
+  Jetson Orin NX  — runs all ML models and the SQLite database
+                    file: scripts/api_server.py
+
+  Laptop          — handles the GUI, microphone input, and speaker output
+                    file: UI/remote_frontend.py
+
+Both machines must be on the same local network (Wi-Fi or Ethernet).
+No internet connection is used at any point.
+
+
+--------------------------------------------------------------------------------
+STEP 1 — SET UP THE JETSON (server)
+--------------------------------------------------------------------------------
+
+1. Make sure all models are present in the models/ folder:
+     models/license_plate_model.onnx
+     models/whisper_small/
+     models/cct_s_v2_global_model_config.yaml
+     models/en_US-hfc_female-medium.onnx
+     models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+
+   These are the same models used when running the system locally.
+   Paths can be changed in utils/config.yaml.
+
+2. Install dependencies on the Jetson (if not already installed):
+
+     pip install fastapi "uvicorn[standard]" python-multipart
+
+   All other dependencies (ultralytics, faster-whisper, piper-tts,
+   llama-cpp-python, fast-plate-ocr, etc.) should already be installed
+   from the original local setup.
+
+3. Find the Jetson's IP address on the local network:
+
+     hostname -I
+
+   Note the IP — you will need it in Step 2.
+
+4. Start the API server from the project root:
+
+     uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000
+
+   You should see:
+     INFO:     Application startup complete.
+     INFO | __main__ | All models loaded — server ready.
+
+   The server is now listening on port 8000 and ready to accept requests.
+
+
+--------------------------------------------------------------------------------
+STEP 2 — SET UP THE LAPTOP (frontend)
+--------------------------------------------------------------------------------
+
+1. Install the lightweight dependencies on the laptop.
+   NO machine-learning packages are needed here:
+
+     pip install requests sounddevice numpy opencv-python Pillow
+
+   tkinter is included with most Python 3.10 installations.
+   If it is missing on Linux: sudo apt install python3-tk
+
+2. Copy (or clone) the project to the laptop.
+   Only the following files are actually needed at runtime:
+     UI/remote_frontend.py
+   Everything else is optional for running the frontend.
+
+3. Start the frontend, pointing it at the Jetson's IP address:
+
+     python UI/remote_frontend.py --host http://<JETSON-IP>:8000
+
+   Example:
+     python UI/remote_frontend.py --host http://192.168.1.50:8000
+
+   If the server is reachable you will see:
+     INFO | __main__ | Connecting to server at http://192.168.1.50:8000 …
+     INFO | __main__ | Server health: {'status': 'ok', 'models': {...}}
+
+   The Tkinter GUI window will then open.
+
+
+--------------------------------------------------------------------------------
+STEP 3 — RUNNING A GATE CHECK
+--------------------------------------------------------------------------------
+
+1. Click "IMPORT TRUCK IMAGE" and select a photo of the truck.
+   The image is sent to the Jetson for plate detection.
+
+2. The voice assistant (audio plays on the laptop speaker) will guide
+   the driver through the verification steps:
+     - If the plate is read confidently and found in the database:
+         the driver is asked to say their name.
+     - If the plate is not recognised clearly:
+         the driver is asked to say their plate out loud.
+     - The laptop microphone records the driver's responses and sends
+       the audio to the Jetson for transcription and understanding.
+
+3. The result is shown in the GUI:
+     Green  — Access granted. Dock and cargo details are displayed.
+     Red    — Access denied or name mismatch. Manual check required.
+     Orange — Processing in progress.
+
+
+--------------------------------------------------------------------------------
+TROUBLESHOOTING
+--------------------------------------------------------------------------------
+
+Problem:  "Cannot reach server" on startup
+Fix:      - Check that uvicorn is running on the Jetson.
+          - Confirm both machines are on the same network.
+          - Check that port 8000 is not blocked by a firewall:
+              sudo ufw allow 8000   (on the Jetson, if ufw is active)
+
+Problem:  Models are slow to load on first startup
+Fix:      Normal — Llama and Whisper take 10–30 seconds to initialise.
+          Wait for "All models loaded — server ready." before using the GUI.
+
+Problem:  Microphone not recording on the laptop
+Fix:      Check the default audio input device:
+              python -c "import sounddevice; print(sounddevice.query_devices())"
+          Set the correct device index with the AUDIODEV environment variable
+          or pass it to sd.rec() by editing the _record() method in
+          UI/remote_frontend.py.
+
+Problem:  No audio output on the laptop
+Fix:      Same as above but for the output device. Also verify system volume.
+
+Problem:  LLM responses are slow (>30 s)
+Fix:      On the Jetson, try enabling GPU offloading for the Llama model.
+          In scripts/audio_pipeline.py, uncomment this line in LanguageModel.__init__:
+              # n_gpu_layers=-1,
+          Then restart the server.
+
+
+--------------------------------------------------------------------------------
+FILE REFERENCE
+--------------------------------------------------------------------------------
+
+  scripts/api_server.py       — FastAPI server (runs on Jetson)
+  UI/remote_frontend.py       — Laptop frontend (GUI + audio I/O + flow logic)
+  utils/config.yaml           — Model paths and database path (Jetson only)
+  utils/license_plates_database.db  — SQLite vehicle manifest (Jetson only)
+
+  Existing standalone mode (Jetson only, no laptop):
+    python UI/GUI.py           — full local Tkinter GUI
+    python UI/CLI.py           — command-line test interface
+
+
+--------------------------------------------------------------------------------
+API ENDPOINTS (for reference / debugging)
+--------------------------------------------------------------------------------
+
+  GET  /health                 — check all models are loaded
+  POST /vision/detect          — image file  →  plate detection result
+  POST /tts/synthesize         — {"text": "..."}  →  WAV audio bytes
+  POST /stt/transcribe         — audio file  →  {"text": "..."}
+  POST /llm/parse_plate        — {"transcription": "..."}  →  {"plate": "..."}
+  POST /llm/parse_yes_no       — {"transcription": "..."}  →  {"result": true/false}
+  POST /llm/extract_name       — {"transcription": "..."}  →  {"name": "..."}
+  POST /llm/verify_name        — {"db_name": "...", "spoken_name": "..."}  →  {"match": true/false}
+  POST /db/lookup              — {"plate": "..."}  →  {"found": true/false, "entry": {...}}
+
+  Interactive docs (while server is running):
+    http://<JETSON-IP>:8000/docs
+
+================================================================================

@@ -1,7 +1,6 @@
 import logging
 import re
 import numpy as np
-import sounddevice as sd
 from faster_whisper import WhisperModel
 from typing import Dict, Any, Optional
 from piper import PiperVoice
@@ -42,6 +41,7 @@ class Listener:
 
     def listen(self, duration: int = 5) -> np.ndarray:
         """Block and record `duration` seconds. Returns a 1-D float32 array."""
+        import sounddevice as sd
         logger.info(f"Listening for {duration}s…")
         audio = sd.rec(
             int(duration * self.sample_rate),
@@ -68,6 +68,7 @@ class Speaker:
         self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])
 
     def speak(self, text: str) -> None:
+        import sounddevice as sd
         audio_data = []
         for chunk in self.pipeline.synthesize(text):
             audio_data.append(np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16))

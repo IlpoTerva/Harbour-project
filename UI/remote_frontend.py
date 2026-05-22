@@ -186,6 +186,7 @@ class RemoteOrchestrator:
 
     def __init__(self, client: HarbourClient) -> None:
         self.client = client
+        self.on_vision_result = None  # optional callback: fn(vision_output) called right after detection
 
     # ── Local audio I/O ───────────────────────────────────────────────────────
 
@@ -318,6 +319,8 @@ class RemoteOrchestrator:
         """
         # Phase 1: vision (on Jetson)
         vision_output = self.client.detect_plate(image)
+        if self.on_vision_result is not None:
+            self.on_vision_result(vision_output)
 
         db_entry = None
         plate_text = None
@@ -360,6 +363,7 @@ class RemoteGUI:
 
     def __init__(self, orchestrator: RemoteOrchestrator) -> None:
         self.orchestrator = orchestrator
+        self.orchestrator.on_vision_result = self._on_vision_update
 
         self.root = tk.Tk()
         self.root.title("Harbor Gate: AI Logistics System (Remote)")
@@ -435,6 +439,13 @@ class RemoteGUI:
         tk_img = ImageTk.PhotoImage(pil_img)
         self.image_label.config(image=tk_img)
         self.image_label.image = tk_img
+
+    # ── Vision callback ───────────────────────────────────────────────────────
+
+    def _on_vision_update(self, vision_output: Optional[Dict[str, Any]]) -> None:
+        """Called from the worker thread as soon as plate detection returns."""
+        if vision_output is not None:
+            self.root.after(0, self.display_image, vision_output["visual"])
 
     # ── Event handlers ────────────────────────────────────────────────────────
 

@@ -46,7 +46,11 @@ def create_mock_db(db_path: str = "license_plates_database.db") -> None:
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
-
+"""
+Wrapper that coordinates VisionPipeline, AudioPipeline, and SQLite for the full vehicle entry flow.
+NOTE - this is the public interface used by the GUI. All methods here are called by the GUI;
+Might not be used since now used the api server instead, but keeping for reference and potential future use if we want to switch back to local inference.
+"""
 class Orchestrator:
     """
     Coordinates VisionPipeline, AudioPipeline, and SQLite.

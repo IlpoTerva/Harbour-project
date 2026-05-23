@@ -312,7 +312,11 @@ class LanguageModel:
 
 
 # ── AudioPipeline ─────────────────────────────────────────────────────────────
-
+"""
+Wrapper that coordinates the Listener, Speaker, and LanguageModel for all driver interactions.
+NOTE - this is the public interface used by Orchestrator. All methods here are called by Orchestrator;
+Might not be used since now used the api server instead, but keeping for reference and potential future use if we want to switch back to local inference.
+"""
 class AudioPipeline:
     """
     Coordinates Speaker → Listener → LanguageModel for all driver interactions.

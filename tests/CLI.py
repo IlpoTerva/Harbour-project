@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 from typing import Optional, Dict, Any
 
-from scripts.orchestrator import Orchestrator, read_config, create_mock_db
+from scripts.helpers import Orchestrator, read_config, create_mock_db
 
 
 # ── ANSI colour helpers (no extra dependency) ─────────────────────────────────

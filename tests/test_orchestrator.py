@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 
-from scripts.orchestrator import Orchestrator, create_mock_db
+from scripts.helpers import Orchestrator, create_mock_db
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

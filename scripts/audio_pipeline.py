@@ -54,7 +54,7 @@ class Listener:
         return audio.flatten()
 
     def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(audio, language="en", beam_size=5)
+        segments, _ = self.model.transcribe(audio, language="en", task="transcribe", beam_size=5)
         text = " ".join(seg.text.strip() for seg in segments)
         logger.info(f"Transcribed: {text!r}")
         return text
@@ -260,37 +260,51 @@ class LanguageModel:
         Returns 'UNKNOWN' if no name is identifiable.
         """
         system = (
-            "You are a name extractor. "
-            "Extract the speaker's full name from their speech. "
+            "You are a name extractor at a harbor gate. "
+            "Extract the speaker's full name (first and last) from their speech. "
             "Return it in Title Case (e.g. John Smith). "
-            "If no name can be found, return UNKNOWN. "
+            "If no clear full name can be found, return UNKNOWN. "
             "Output ONLY the name — no explanation, no punctuation."
         )
         user = 'Speaker said: "' + transcription + '"\nExtracted name:'
 
         try:
             name = self._call(self._prompt(system, user), max_tokens=20, temperature=0.1)
+            # Reject single-word results from the LLM — a full name is expected.
+            if name.upper() == "UNKNOWN" or len(name.strip().split()) < 2:
+                logger.info(f"Name extraction returned single token or UNKNOWN: {name!r}")
+                return "UNKNOWN"
             logger.info(f"Name extracted: {transcription!r} → {name!r}")
             return name
         except Exception:
-            logger.exception("LLM name extraction failed — using raw transcription as fallback.")
-            return transcription.strip().title()
+            logger.exception("LLM name extraction failed.")
+            return "UNKNOWN"
 
 
     def verify_name_similarity(self, db_name: str, spoken_name: str) -> bool:
-        """Fuzzy-match a spoken name against the name on file.
+        """Strict match of a spoken name against the name on file.
 
-        Lenient matching: nicknames, partial names, different pronunciations,
-        and cross-language equivalents (e.g. Juan ≈ John, Matti ≈ Matthew).
-        Uses temperature=0.0 — this is a binary access-control decision.
-        Falls back to first-token substring match if the LLM call fails.
+        The last name must match exactly (or near-exactly for spelling variants).
+        Common English short-form nicknames (Bob/Robert, Bill/William, Kate/Katherine)
+        are accepted for the first name. First-name-only responses, cross-language
+        substitutions (Juan/John), and partial matches are rejected.
+        Uses temperature=0.0. Falls back to a strict token-overlap check.
         """
+        if spoken_name in ("UNKNOWN", ""):
+            logger.info("Name match rejected: spoken name is UNKNOWN or empty.")
+            return False
+
         system = (
-            "You are a name verification assistant at a harbor gate. "
-            "Decide if two names refer to the same person. "
-            "Be lenient: allow for nicknames, partial names, different pronunciations, "
-            "and cross-language equivalents (e.g. Juan ≈ John, Matti ≈ Matthew, "
-            "Meikalainen ≈ Meikäläinen). "
+            "You are a strict name verification assistant at a harbor gate. "
+            "Decide if the spoken name refers to the SAME person as the name on file. "
+            "Rules (apply all of them):\n"
+            "1. The LAST NAME must match — exact spelling or a very minor variation "
+            "(e.g. a missing accent). Different last names are NEVER a match.\n"
+            "2. If the name on file includes a last name, a first-name-only response is NOT a match.\n"
+            "3. The first name may be a well-known English short-form nickname for the registered "
+            "first name (e.g. Bob for Robert, Bill for William, Kate for Katherine). "
+            "Cross-language substitutions such as Juan for John are NOT a match.\n"
+            "4. If in doubt, output NO.\n"
             "Output ONLY the single word YES or NO. No other text whatsoever."
         )
         user = (
@@ -301,14 +315,23 @@ class LanguageModel:
 
         try:
             result = self._call(self._prompt(system, user), max_tokens=5, temperature=0.0).upper()
+            # Accept only an explicit YES; anything else (NO, empty, garbage) → False.
             match = result.startswith("YES")
             logger.info(f"Name match: {db_name!r} vs {spoken_name!r} → {match}")
             return match
         except Exception:
-            logger.exception("LLM name matching failed — using first-token fallback.")
-            s = spoken_name.lower().strip().split()
-            e = db_name.lower().strip().split()
-            return bool(s and e and s[0] == e[0])
+            logger.exception("LLM name matching failed — using strict token fallback.")
+            spoken_parts = spoken_name.lower().strip().split()
+            db_parts = db_name.lower().strip().split()
+            if not spoken_parts or not db_parts:
+                return False
+            # Last names must match exactly.
+            if spoken_parts[-1] != db_parts[-1]:
+                return False
+            # If the registered name has a first name, require it to appear in the spoken name too.
+            if len(db_parts) >= 2:
+                return db_parts[0] in spoken_parts
+            return True
 
 
 # ── AudioPipeline ─────────────────────────────────────────────────────────────

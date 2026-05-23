@@ -4,15 +4,9 @@ from ultralytics import YOLO
 from fast_plate_ocr import LicensePlateRecognizer
 from typing import Dict, Any, Optional
 
-import yaml
+
 logger = logging.getLogger(__name__)
 
-def read_config(path: str) -> Dict[str, Any]:
-    """Read the YAML config file at `path` and return it as a dict."""
-    
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-    
 
 class VisionPipeline:
     def __init__(self, config: Dict[str, Any], device: str = "cpu", onnx: bool = False) -> None:

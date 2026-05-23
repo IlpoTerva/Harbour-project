@@ -50,8 +50,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from scripts.audio_pipeline import LanguageModel, Listener, Speaker
-from scripts.orchestrator import create_mock_db
-from scripts.vision_pipeline import VisionPipeline, read_config
+from scripts.helpers import create_mock_db, read_config
+from scripts.vision_pipeline import VisionPipeline
 
 
 

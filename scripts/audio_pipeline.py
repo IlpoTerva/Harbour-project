@@ -34,10 +34,12 @@ class Listener:
 
     def __init__(self, conf: Dict[str, Any], sample_rate: int = 16_000, device: str = "cpu") -> None:
         self.sample_rate = sample_rate
+        # int8 is fast on CPU; float16 gets CUDA tensor cores on GPU.
+        compute_type = "float16" if device == "cuda" else "int8"
         self.model: WhisperModel = WhisperModel(
             model_size_or_path=conf["models"]["whisper_model_path"],
-            device="cpu",
-            compute_type="int8",
+            device=device,
+            compute_type=compute_type,
         )
 
     def listen(self, duration: int = 5) -> np.ndarray:
@@ -54,7 +56,13 @@ class Listener:
         return audio.flatten()
 
     def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(audio, language="en", task="transcribe", beam_size=5)
+        segments, _ = self.model.transcribe(
+            audio,
+            beam_size=1,                     # greedy decoding — ~3-5× faster than beam_size=5
+            vad_filter=True,                 # skip silent padding via bundled silero-VAD
+            condition_on_previous_text=False, # single utterances need no inter-segment context
+            without_timestamps=True,         # skip timestamp computation
+        )
         text = " ".join(seg.text.strip() for seg in segments)
         logger.info(f"Transcribed: {text!r}")
         return text

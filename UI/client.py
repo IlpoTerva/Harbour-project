@@ -71,18 +71,18 @@ class HarbourClient:
             "visual": visual,
         }
 
-    def synthesize(self, text: str) -> Tuple[np.ndarray, int]:
-        """Request TTS synthesis. Returns (float32 audio array, sample_rate)."""
+    def synthesize(self, text: str, language: str = "en") -> Tuple[np.ndarray, int]:
+        """Request TTS synthesis in the given language. Returns (float32 audio array, sample_rate)."""
         resp = requests.post(
             f"{self.base}/tts/synthesize",
-            json={"text": text},
+            json={"text": text, "language": language},
             timeout=self.timeout,
         )
         resp.raise_for_status()
         return _wav_to_float32(resp.content)
 
-    def transcribe(self, audio: np.ndarray) -> str:
-        """Upload recorded audio and return the Whisper transcription."""
+    def transcribe(self, audio: np.ndarray) -> Tuple[str, str]:
+        """Upload recorded audio. Returns (transcription_text, detected_language_code)."""
         wav_bytes = _float32_to_wav(audio)
         resp = requests.post(
             f"{self.base}/stt/transcribe",
@@ -90,7 +90,8 @@ class HarbourClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        return resp.json()["text"]
+        data = resp.json()
+        return data["text"], data.get("language", "en")
 
     def parse_plate(self, transcription: str) -> str:
         resp = requests.post(

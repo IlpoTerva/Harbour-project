@@ -1,11 +1,17 @@
-models:  
+models:
   model_path: "models/license_plate_model.pt"
   model_path_onnx: "models/license_plate_model.onnx"
   whisper_model_path: "models/whisper_small/"
   fast_ocr_model_path: "models/cct_s_v2_global_model_config.yaml"
-  piper_model_path: "models/en_US-hfc_female-medium.onnx"
   llm_model_path: "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 database:
   db_path: "utils/license_plates_database.db"
 images:
   path: "database_imgs/"
+speech:
+  default_language: "en"
+  piper_models:
+    en: "models/en_US-hfc_female-medium.onnx"
+    es: "models/es_ES-davefx-medium.onnx"
+    fr: "models/fr_FR-siwis-medium.onnx"
+    pt: "models/pt_PT-tugao-medium.onnx"

@@ -97,6 +97,11 @@ class TestParseYesNo:
         lm._mock_llama.side_effect = RuntimeError("LLM crashed")
         assert lm.parse_yes_no(f"I think {word}") is True
 
+    @pytest.mark.parametrize("word", ["sí", "oui", "sim", "correcto", "exact", "certo"])
+    def test_multilingual_yes_keywords_trigger_fallback_true(self, lm, word):
+        lm._mock_llama.side_effect = RuntimeError("LLM crashed")
+        assert lm.parse_yes_no(f"I think {word}") is True
+
 
 # ── 3. Name extraction ────────────────────────────────────────────────────────
 

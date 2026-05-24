@@ -124,6 +124,7 @@ def _wav_to_float32(wav_bytes: bytes) -> np.ndarray:
 
 class SynthesizeRequest(BaseModel):
     text: str
+    language: str = "en"
 
 class ParsePlateRequest(BaseModel):
     transcription: str
@@ -189,16 +190,18 @@ def synthesize(req: SynthesizeRequest) -> Response:
     """Synthesise text with Piper TTS.
 
     Returns raw WAV audio bytes (audio/wav).  The laptop plays them locally.
+    Accepts an optional `language` field (default "en") to select the Piper model.
     """
+    chunks_iter, sample_rate = _speaker.synthesize_chunks(req.text, req.language)
     chunks = [
         np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
-        for chunk in _speaker.pipeline.synthesize(req.text)
+        for chunk in chunks_iter
     ]
     if not chunks:
         raise HTTPException(status_code=500, detail="TTS produced no audio.")
 
     pcm = np.concatenate(chunks)
-    wav = _int16_to_wav(pcm, _speaker.pipeline.config.sample_rate)
+    wav = _int16_to_wav(pcm, sample_rate)
     return Response(content=wav, media_type="audio/wav")
 
 
@@ -207,12 +210,12 @@ async def transcribe(audio: UploadFile = File(...)) -> Dict[str, str]:
     """Transcribe a WAV audio file with Faster-Whisper.
 
     Expects mono 16 kHz audio (matching the laptop's recording settings).
-    Returns {"text": "..."}.
+    Returns {"text": "...", "language": "en"} where language is the detected ISO 639-1 code.
     """
     wav_bytes = await audio.read()
     samples = _wav_to_float32(wav_bytes)
-    text = _listener.transcribe(samples)
-    return {"text": text}
+    text, language = _listener.transcribe(samples)
+    return {"text": text, "language": language}
 
 
 @app.post("/llm/parse_plate")

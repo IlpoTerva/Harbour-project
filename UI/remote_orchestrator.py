@@ -3,6 +3,7 @@ import numpy as np
 import logging
 from typing import Any, Dict, Optional, Tuple
 from client import HarbourClient
+from i18n import get as _t, SUPPORTED_LANGS
 
 _SAMPLE_RATE = 16_000
 
@@ -17,20 +18,26 @@ class RemoteOrchestrator:
     to the Jetson server via HarbourClient.  Audio I/O (recording + playback)
     is handled locally on the laptop with sounddevice.
 
+    Language is auto-detected from the first driver transcription and used for
+    all subsequent TTS prompts within that session.  Between sessions (calls to
+    run_automated_entry) the language resets to `default_language`.
+
     The same public interface as Orchestrator:
         result, vision_output = remote_orchestrator.run_automated_entry(image)
     """
 
-    def __init__(self, client: HarbourClient) -> None:
+    def __init__(self, client: HarbourClient, default_language: str = "en") -> None:
         self.client = client
+        self._default_lang: str = default_language
+        self._lang: str = default_language
         self.on_vision_result = None  # optional callback: fn(vision_output) called right after detection
 
     # ── Local audio I/O ───────────────────────────────────────────────────────
 
     def _speak(self, text: str) -> None:
-        """Synthesise on the Jetson and play back through the laptop speaker."""
-        logger.info(f"Speaking: {text!r}")
-        audio, sample_rate = self.client.synthesize(text)
+        """Synthesise on the Jetson (in self._lang) and play back locally."""
+        logger.info(f"Speaking [{self._lang}]: {text!r}")
+        audio, sample_rate = self.client.synthesize(text, language=self._lang)
         sd.play(audio, samplerate=sample_rate)
         sd.wait()
 
@@ -47,22 +54,23 @@ class RemoteOrchestrator:
 
     def _listen_and_transcribe(self, duration: int) -> Dict[str, Any]:
         audio = self._record(duration)
-        text = self.client.transcribe(audio)
+        text, detected_lang = self.client.transcribe(audio)
+        if detected_lang and detected_lang in SUPPORTED_LANGS:
+            if detected_lang != self._lang:
+                logger.info(f"Language switched: {self._lang!r} → {detected_lang!r}")
+            self._lang = detected_lang
         return {"transcription": text, "audio": audio}
 
-    # ── Conversation helpers (mirrors AudioPipeline) ──────────────────────────
+    # ── Conversation helpers ──────────────────────────────────────────────────
 
     def _request_plate_from_driver(
         self, vision_output: Optional[Dict], duration: int = 6
     ) -> Dict[str, Any]:
         if vision_output and vision_output.get("conf", 0) >= 0.5:
             plate_letters = " ".join(vision_output["plate"])
-            prompt = (
-                f"I detected the plate {plate_letters} but I am not fully confident. "
-                "Could you please confirm your licence plate out loud?"
-            )
+            prompt = _t("plate_low_conf", self._lang, plate=plate_letters)
         else:
-            prompt = "I could not read your licence plate. Please say it out loud now."
+            prompt = _t("plate_not_read", self._lang)
         self._speak(prompt)
         result = self._listen_and_transcribe(duration)
         result["plate"] = self.client.parse_plate(result["transcription"])
@@ -71,40 +79,31 @@ class RemoteOrchestrator:
 
     def _confirm_plate_with_driver(self, plate: str, duration: int = 4) -> bool:
         plate_letters = " ".join(plate)
-        self._speak(
-            f"I read your licence plate as {plate_letters}. "
-            "Is that correct? Please say yes or no."
-        )
+        self._speak(_t("confirm_plate", self._lang, plate=plate_letters))
         result = self._listen_and_transcribe(duration)
         confirmed = self.client.parse_yes_no(result["transcription"])
         logger.info(f"Plate {plate!r} confirmed: {confirmed}")
         return confirmed
 
     def _request_driver_name(self, duration: int = 5) -> str:
-        self._speak("Please say your full name for verification.")
+        self._speak(_t("request_name", self._lang))
         result = self._listen_and_transcribe(duration)
         name = self.client.extract_name(result["transcription"])
         logger.info(f"Driver name: {name!r}")
         return name
 
-    # ── Flow helpers (mirrors Orchestrator._alert / _verify_name) ────────────
+    # ── Flow helpers ──────────────────────────────────────────────────────────
 
     def _alert(
         self, reason: str, plate: Optional[str], vision_output: Any
     ) -> Tuple[Dict, Any]:
         if reason == "plate_not_in_db":
             plate_str = " ".join(plate) if plate else "unknown"
-            msg = (
-                f"I'm sorry, but the plate {plate_str} is not registered for today. "
-                "A gate worker has been alerted. Please wait."
-            )
+            msg = _t("alert_not_in_db", self._lang, plate=plate_str)
         elif reason == "name_mismatch":
-            msg = (
-                "I'm sorry, but the name you provided does not match our records. "
-                "A gate worker has been alerted. Please wait."
-            )
+            msg = _t("alert_name_mismatch", self._lang)
         else:
-            msg = "Access denied. A gate worker has been alerted. Please wait."
+            msg = _t("alert_generic", self._lang)
 
         self._speak(msg)
         logger.warning(f"WORKER ALERT — reason: {reason} | plate: {plate!r}")
@@ -119,12 +118,12 @@ class RemoteOrchestrator:
 
         if name_ok:
             logger.info(f"Access granted — plate: {db_entry['plate']!r}, driver: {spoken_name!r}")
-            dock_msg = (
-                f"Access granted. Welcome, {db_entry['driver_name']}. "
-                f"Please proceed to {db_entry['dock']}. "
-                f"Your cargo is {db_entry['cargo']}. "
-                f"Your arrival window is {db_entry['arrival_window']}. "
-                "Have a safe unloading."
+            dock_msg = _t(
+                "access_granted", self._lang,
+                name=db_entry["driver_name"],
+                dock=db_entry["dock"],
+                cargo=db_entry["cargo"],
+                window=db_entry["arrival_window"],
             )
             self._speak(dock_msg)
             return {"status": "success", "db_entry": db_entry}, vision_output
@@ -140,8 +139,9 @@ class RemoteOrchestrator:
         self, image: np.ndarray
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """
-        Full gate-check cycle.  Same interface as Orchestrator.run_automated_entry
-        so RemoteGUI (and the existing GUI class) can use it without modification.
+        Full gate-check cycle.  Language resets to the configured default at the
+        start of each session and switches to the driver's detected language after
+        the first transcription.
 
         Flow A — Vision confident (conf ≥ 0.5) + plate in DB:
             vision ──► DB hit ──► name verify ──► grant / deny
@@ -154,6 +154,8 @@ class RemoteOrchestrator:
         Flow C — Vision low-confidence or no detection:
             audio plate request ──► DB lookup ──► name verify / alert
         """
+        self._lang = self._default_lang  # reset language for each new session
+
         # Phase 1: vision (on Jetson)
         vision_output = self.client.detect_plate(image)
         if self.on_vision_result is not None:

@@ -2,7 +2,7 @@ import logging
 import re
 import numpy as np
 from faster_whisper import WhisperModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Iterator, Optional, Tuple
 from piper import PiperVoice
 from llama_cpp import Llama
 
@@ -14,17 +14,43 @@ logger = logging.getLogger(__name__)
 # European plates are typically 5-8 chars; 3 is the floor to avoid false hits.
 _PLATE_RE = re.compile(r'[A-Z0-9]{3,9}')
 
-# NATO phonetic alphabet + spoken digit words → single character
+# NATO phonetic alphabet (international standard) + spoken digit words.
+# Digit words are included for EN/ES/FR/PT so layer-2 deterministic conversion
+# works for drivers who spell out digits in their native language.
 _NATO = {
+    # NATO letters (language-agnostic international standard)
     "alpha":"A", "bravo":"B", "charlie":"C", "delta":"D", "echo":"E",
     "foxtrot":"F", "golf":"G", "hotel":"H", "india":"I", "juliet":"J",
     "kilo":"K", "lima":"L", "mike":"M", "november":"N", "oscar":"O",
     "papa":"P", "quebec":"Q", "romeo":"R", "sierra":"S", "tango":"T",
     "uniform":"U", "victor":"V", "whiskey":"W", "x-ray":"X", "xray":"X",
     "yankee":"Y", "zulu":"Z",
+    # English digits
     "zero":"0", "one":"1", "two":"2", "three":"3", "four":"4",
     "five":"5", "six":"6", "seven":"7", "eight":"8", "nine":"9",
+    # Spanish digits (seis/six already covered above)
+    "cero":"0", "uno":"1", "dos":"2", "tres":"3", "cuatro":"4",
+    "cinco":"5", "siete":"7", "ocho":"8", "nueve":"9",
+    # French digits (six already covered above)
+    "zéro":"0", "un":"1", "deux":"2", "trois":"3", "quatre":"4",
+    "cinq":"5", "sept":"7", "huit":"8", "neuf":"9",
+    # Portuguese digits (zero/seis/cinco already covered above)
+    "um":"1", "dois":"2", "três":"3", "quatro":"4",
+    "sete":"7", "oito":"8", "nove":"9",
 }
+
+# Module-level yes/no keyword fallback — used when the LLM call fails.
+# Covers EN / ES / FR / PT affirmatives.
+_YES_KEYWORDS = [
+    # English
+    "yes", "correct", "right", "yeah", "yep", "confirmed",
+    # Spanish
+    "sí", "si", "correcto", "exacto",
+    # French
+    "oui", "exact",
+    # Portuguese
+    "sim", "correto", "certo",
+]
 
 
 # ── Listener ──────────────────────────────────────────────────────────────────
@@ -55,43 +81,84 @@ class Listener:
         sd.wait()
         return audio.flatten()
 
-    def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self.model.transcribe(
+    def transcribe(self, audio: np.ndarray) -> Tuple[str, str]:
+        """Transcribe audio and return (text, detected_language_code)."""
+        segments, info = self.model.transcribe(
             audio,
-            beam_size=1,                     # greedy decoding — ~3-5× faster than beam_size=5
-            vad_filter=True,                 # skip silent padding via bundled silero-VAD
-            condition_on_previous_text=False, # single utterances need no inter-segment context
-            without_timestamps=True,         # skip timestamp computation
+            beam_size=1,                      # greedy decoding — ~3-5× faster than beam_size=5
+            vad_filter=True,                  # skip silent padding via bundled silero-VAD
+            condition_on_previous_text=False,  # single utterances need no inter-segment context
+            without_timestamps=True,          # skip timestamp computation
         )
         text = " ".join(seg.text.strip() for seg in segments)
-        logger.info(f"Transcribed: {text!r}")
-        return text
+        detected_lang = getattr(info, "language", "en") or "en"
+        logger.info(f"Transcribed ({detected_lang}): {text!r}")
+        return text, detected_lang
 
 
 # ── Speaker ───────────────────────────────────────────────────────────────────
 
 class Speaker:
-    """Converts text to speech with Piper and plays it back synchronously."""
+    """Converts text to speech with Piper TTS.
 
-    def __init__(self, conf: Dict[str, Any], device="cpu") -> None:
-        if device == "cuda":
-            self.pipeline = PiperVoice.load(
-                conf["models"]["piper_model_path"],
-                use_cuda=True,
-            )
-        else:  # CPU-only fallback
-            self.pipeline = PiperVoice.load(conf["models"]["piper_model_path"])
+    Supports multiple languages via a lazy model registry: models are loaded on
+    first use and cached. Add a new language by adding its code and model path
+    to config.yaml under speech.piper_models — no code changes needed.
+    """
 
-    def speak(self, text: str) -> None:
+    def __init__(self, conf: Dict[str, Any], device: str = "cpu") -> None:
+        self._use_cuda = (device == "cuda")
+        # Build model-path map from new config layout, with fallback to legacy key.
+        speech_conf = conf.get("speech", {})
+        piper_map = speech_conf.get("piper_models", {})
+        if not piper_map:
+            legacy = conf.get("models", {}).get("piper_model_path")
+            if legacy:
+                piper_map = {"en": legacy}
+        self._model_paths: Dict[str, str] = piper_map
+        self._pipelines: Dict[str, PiperVoice] = {}
+        # Pre-load the default language so the first call has no extra latency.
+        default_lang = speech_conf.get("default_language", "en")
+        self._load(default_lang)
+
+    def _load(self, lang: str) -> Optional[PiperVoice]:
+        if lang in self._pipelines:
+            return self._pipelines[lang]
+        path = self._model_paths.get(lang)
+        if path is None:
+            logger.warning(f"No Piper model configured for language {lang!r}.")
+            return None
+        voice = (
+            PiperVoice.load(path, use_cuda=True)
+            if self._use_cuda
+            else PiperVoice.load(path)
+        )
+        self._pipelines[lang] = voice
+        logger.info(f"Piper model loaded for language {lang!r}.")
+        return voice
+
+    def synthesize_chunks(self, text: str, language: str = "en") -> Tuple[Iterator, int]:
+        """Return (chunk_iterator, sample_rate) for use by the API server."""
+        pipeline = self._load(language) or self._pipelines.get("en")
+        if pipeline is None:
+            raise RuntimeError("No TTS pipeline available.")
+        return pipeline.synthesize(text), pipeline.config.sample_rate
+
+    def speak(self, text: str, language: str = "en") -> None:
+        """Synthesise `text` and play it back through the local speaker."""
         import sounddevice as sd
+        pipeline = self._load(language) or self._pipelines.get("en")
+        if pipeline is None:
+            logger.error("No TTS pipeline available — cannot speak.")
+            return
         audio_data = []
-        for chunk in self.pipeline.synthesize(text):
+        for chunk in pipeline.synthesize(text):
             audio_data.append(np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16))
         if not audio_data:
             logger.warning("TTS produced no audio — is the text empty?")
             return
         full_audio = np.concatenate(audio_data).astype(np.float32) / 32768.0
-        sd.play(full_audio, samplerate=self.pipeline.config.sample_rate)
+        sd.play(full_audio, samplerate=pipeline.config.sample_rate)
         sd.wait()
 
 
@@ -205,12 +272,15 @@ class LanguageModel:
         system = (
             "You are a harbor gate assistant. "
             "Extract ONLY the alphanumeric license plate from the driver's speech. "
+            "The driver may speak any language; the plate itself is always alphanumeric. "
             "Convert NATO phonetic alphabet words to their single letters: "
             "Alpha=A, Bravo=B, Charlie=C, Delta=D, Echo=E, Foxtrot=F, Golf=G, "
             "Hotel=H, India=I, Juliet=J, Kilo=K, Lima=L, Mike=M, November=N, "
             "Oscar=O, Papa=P, Quebec=Q, Romeo=R, Sierra=S, Tango=T, "
             "Uniform=U, Victor=V, Whiskey=W, X-ray=X, Yankee=Y, Zulu=Z. "
-            "Digits: zero=0 one=1 two=2 three=3 four=4 five=5 six=6 seven=7 eight=8 nine=9. "
+            "Digits (EN/ES/FR/PT): zero/cero/zéro=0, one/uno/un/um=1, two/dos/deux/dois=2, "
+            "three/tres/trois/três=3, four/cuatro/quatre/quatro=4, five/cinco/cinq=5, "
+            "six/seis=6, seven/siete/sept/sete=7, eight/ocho/huit/oito=8, nine/nueve/neuf/nove=9. "
             "If no plate can be found, return UNKNOWN. "
             "Output ONLY the plate string, no spaces, no punctuation, no explanation."
         )
@@ -257,7 +327,7 @@ class LanguageModel:
         except Exception:
             logger.exception("LLM yes/no classification failed — using keyword fallback.")
             lower = transcription.lower()
-            return any(w in lower for w in ["yes", "correct", "right", "yeah", "yep", "confirmed"])
+            return any(w in lower for w in _YES_KEYWORDS)
 
     # ── Task 3: Name extraction ───────────────────────────────────────────────
 
@@ -309,9 +379,9 @@ class LanguageModel:
             "1. The LAST NAME must match — exact spelling or a very minor variation "
             "(e.g. a missing accent). Different last names are NEVER a match.\n"
             "2. If the name on file includes a last name, a first-name-only response is NOT a match.\n"
-            "3. The first name may be a well-known English short-form nickname for the registered "
-            "first name (e.g. Bob for Robert, Bill for William, Kate for Katherine). "
-            "Cross-language substitutions such as Juan for John are NOT a match.\n"
+            "3. The first name may be a universally recognised short form or nickname of the "
+            "registered first name (e.g. Bob for Robert). "
+            "Do not accept cross-language equivalents as a match (e.g. Juan for John is NOT a match).\n"
             "4. If in doubt, output NO.\n"
             "Output ONLY the single word YES or NO. No other text whatsoever."
         )

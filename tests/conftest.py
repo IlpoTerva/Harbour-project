@@ -50,8 +50,11 @@ def mock_config(tmp_path):
             "model_path":         "fake_model.pt",
             "model_path_onnx":    "fake_model.onnx",
             "whisper_model_path": "small",
-            "piper_model_path":   "fake_voice.onnx",
             "llm_model_path":     "fake_llm.gguf",
+        },
+        "speech": {
+            "default_language": "en",
+            "piper_models": {"en": "fake_voice_en.onnx"},
         },
         "database": {"db_path": str(tmp_path / "test.db")},
         "images":   {"path":    str(tmp_path)},

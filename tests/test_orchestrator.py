@@ -53,7 +53,7 @@ def _client(**overrides) -> MagicMock:
     """
     c = MagicMock()
     c.synthesize.return_value = (np.zeros(100, dtype=np.float32), 16_000)
-    c.transcribe.return_value = ""
+    c.transcribe.return_value = ("", "en")
     c.lookup_plate.return_value = None   # safe default: plate not found
     for attr, val in overrides.items():
         getattr(c, attr).return_value = val
@@ -259,7 +259,7 @@ class TestReturnTypeContract:
     def test_always_returns_two_element_tuple(self, blank_image, status):
         c = MagicMock()
         c.synthesize.return_value = (np.zeros(100, dtype=np.float32), 16_000)
-        c.transcribe.return_value = ""
+        c.transcribe.return_value = ("", "en")
         c.detect_plate.return_value = None
 
         if status == "success":

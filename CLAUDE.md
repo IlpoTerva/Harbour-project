@@ -4,9 +4,9 @@
 
 Harbour Agent is an automated harbour gate system for controlling truck access. When a truck arrives, the system captures an image, detects and reads the license plate (vision pipeline), cross-references the plate against a SQLite vehicle manifest, and conducts a spoken voice exchange with the driver to verify identity (audio pipeline). Based on confidence and database lookup results, it either grants access with dock instructions, requests manual verification, or denies entry.
 
-**All processing is strictly local and offline.** No cloud APIs, no internet connectivity required or permitted at runtime.
+**All ML processing runs on the Jetson Orin NX.** The laptop connects to the Jetson over HTTP — no ML packages are required on the laptop. No cloud APIs or internet connectivity are required or permitted at runtime.
 
-**Target hardware:** NVIDIA Jetson Orin NX  
+**Target hardware:** NVIDIA Jetson Orin NX (server) + laptop (client)  
 **Python version:** 3.10
 
 ---
@@ -21,6 +21,7 @@ Harbour Agent is an automated harbour gate system for controlling truck access. 
 | Language model | Llama 3.2 1B Instruct (llama-cpp-python, GGUF Q4_K_M) |
 | Text-to-speech | Piper TTS |
 | Database | SQLite |
+| Server framework | FastAPI + uvicorn |
 | GUI | Tkinter |
 | Config | YAML (`utils/config.yaml`) |
 
@@ -28,7 +29,22 @@ Harbour Agent is an automated harbour gate system for controlling truck access. 
 
 ## Architecture
 
-### Three-Flow Decision Logic (`Orchestrator.run_automated_entry`)
+### Deployment topology
+
+```
+Jetson Orin NX (server)              Laptop (client)
+────────────────────────             ────────────────────────
+scripts/api_server.py                UI/remote_frontend.py
+  ├─ VisionPipeline (ONNX)      ←→   UI/client.py (HarbourClient)
+  ├─ Listener (Whisper)              UI/remote_orchestrator.py
+  ├─ Speaker (Piper TTS)               ├─ audio I/O via sounddevice
+  ├─ LanguageModel (Llama 3.2)         └─ gate-flow logic (3 flows)
+  └─ SQLite DB
+```
+
+All ML inference and database lookups happen on the Jetson. Audio I/O (recording and playback via `sounddevice`) happens on the laptop.
+
+### Three-Flow Decision Logic (`RemoteOrchestrator.run_automated_entry`)
 
 ```
 Flow A — Vision confident (conf ≥ 0.5) + plate found in DB
@@ -54,50 +70,78 @@ Flow C — Vision low-confidence (< 0.5) or no plate detected
 
 ## Main Classes
 
-### `scripts/orchestrator.py`
+### `scripts/api_server.py`
 
-**`Orchestrator`** — Top-level coordinator. Owns the `VisionPipeline`, `AudioPipeline`, and SQLite connection. The single public entry point is `run_automated_entry(image)` which runs one full gate-check cycle and returns `(result_dict, vision_output)`. Implements all three flows. Supports context manager (`with` statement). Result statuses: `"success"`, `"alert_worker"`, `"name_mismatch"`.
+FastAPI server that runs on the Jetson. Loads all ML models and the SQLite database at startup (as module-level singletons). Exposes the following REST endpoints:
 
-**`create_mock_db(db_path)`** — Seeds a SQLite database with six demo trucks for development and testing.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Returns model/DB load status |
+| `/vision/detect` | POST | Upload image → plate, conf, bbox, annotated image (base64 JPEG) |
+| `/tts/synthesize` | POST | Text → WAV audio bytes |
+| `/stt/transcribe` | POST | WAV audio → Whisper transcription |
+| `/llm/parse_plate` | POST | Transcription → extracted plate string |
+| `/llm/parse_yes_no` | POST | Transcription → bool |
+| `/llm/extract_name` | POST | Transcription → name string |
+| `/llm/verify_name` | POST | db_name + spoken_name → bool |
+| `/db/lookup` | POST | plate → DB entry or null |
+
+Start with: `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000`
+
+---
+
+### `UI/client.py`
+
+**`HarbourClient`** — Thin synchronous HTTP wrapper around every server endpoint. All calls use `requests`. Audio encoding/decoding helpers (`_float32_to_wav`, `_wav_to_float32`) convert between numpy float32 arrays and WAV bytes for the STT and TTS endpoints.
+
+---
+
+### `UI/remote_orchestrator.py`
+
+**`RemoteOrchestrator`** — Mirrors the old `Orchestrator` interface but delegates all ML and DB work to the Jetson via `HarbourClient`. Audio I/O (recording + playback via `sounddevice`) runs locally on the laptop. The single public entry point is `run_automated_entry(image)` which returns `(result_dict, vision_output)`. Implements all three flows. Result statuses: `"success"`, `"alert_worker"`, `"name_mismatch"`. Accepts an optional `on_vision_result` callback invoked right after plate detection (used by `RemoteGUI` to update the image display immediately).
+
+---
+
+### `UI/remote_frontend.py`
+
+**`RemoteGUI`** — Tkinter laptop frontend. Functionally identical to the old `UI/GUI.py` but carries no ML imports. Two-column layout: annotated image (left) + live log (right). Runs `RemoteOrchestrator` in a background thread. Thread-safe helpers: `log()`, `set_status()`, `set_button_enabled()`. Includes image file import dialog.
+
+Run with: `python UI/remote_frontend.py --host http://<jetson-ip>:8000`
 
 ---
 
 ### `scripts/vision_pipeline.py`
 
-**`VisionPipeline`** — License plate detection and OCR. Uses YOLOv11 for bounding-box detection and Fast-Plate-OCR for character recognition. Supports ONNX model variant. Main method: `read_plate(image)` returns a dict with `plate`, `conf`, `bbox`, `visual` (annotated image), or `None` if no plate is found. `_select_best_box()` picks the highest-confidence detection when multiple plates are visible.
-
-**`read_config(path)`** — Loads `utils/config.yaml`.
+**`VisionPipeline`** — License plate detection and OCR. Uses YOLOv11 for bounding-box detection and Fast-Plate-OCR (`cct-s-v2-global-model`) for character recognition. Supports ONNX model variant (preferred on Jetson). Main method: `read_plate(image)` returns a dict with `plate`, `conf`, `bbox`, `visual` (annotated image), or `None` if no plate is found. `_select_best_box()` picks the highest-confidence detection when multiple plates are visible.
 
 ---
 
 ### `scripts/audio_pipeline.py`
 
-**`Listener`** — Records microphone audio (16kHz, float32 via `sounddevice`) and transcribes it with Faster-Whisper.
+**`Listener`** — Transcribes audio with Faster-Whisper. `listen(duration)` records from microphone; `transcribe(audio)` accepts a numpy float32 array and returns a string.
 
-**`Speaker`** — Synthesises speech with Piper TTS and plays back via `sounddevice`.
+**`Speaker`** — Synthesises speech with Piper TTS and plays back via `sounddevice`. On the server, `speak()` is not used — the `/tts/synthesize` endpoint returns WAV bytes instead.
 
-**`LanguageModel`** — Llama 3.2 1B wrapper. Used only for *understanding* driver speech, not for free-form generation. Key methods:
+**`LanguageModel`** — Llama 3.2 1B wrapper used exclusively for *understanding* driver speech. Key methods:
 - `parse_plate_from_transcription(text)` — Four-layer extraction (see above)
 - `parse_yes_no(text)` → bool — Binary yes/no classification
 - `extract_name(text)` → str — Extracts a name in Title Case
-- `verify_name_similarity(db_name, spoken_name)` → bool — Lenient fuzzy match
-
-**`AudioPipeline`** — Coordinates `Speaker`, `Listener`, and `LanguageModel`. Called by `Orchestrator`:
-- `request_plate_from_driver(vision_output)` — Asks driver to say their plate, returns transcription + parsed plate
-- `confirm_plate_with_driver(plate)` → bool — Asks driver to confirm a plate reading
-- `request_driver_name()` → str — Asks driver for their name
-- `give_dock_instructions(db_entry)` — Speaks access-granted message with dock number
-- `speak(text)` — Direct TTS for alerts
+- `verify_name_similarity(db_name, spoken_name)` → bool — Strict fuzzy match (last name must match; common English nicknames accepted for first name)
 
 ---
 
-### `UI/GUI.py`
+### `scripts/helpers.py`
 
-**`GUI`** — Tkinter production interface. Two-column layout: annotated image (left) + live log (right). Runs the orchestrator in a background thread to keep the UI responsive. Thread-safe helpers: `log()`, `set_status()`, `set_button_enabled()`. Status indicator uses colour coding (green/red/orange). Includes image file import dialog.
+Utility functions shared across server and tests:
 
-### `UI/CLI.py`
+- **`create_mock_db(db_path)`** — Seeds a SQLite database with six demo trucks (plate, driver_name, cargo, dock, arrival_window).
+- **`read_config(path)`** — Loads `utils/config.yaml` and returns it as a dict.
 
-**`CLI`** — Command-line testing interface. Modes: full flow, vision only, audio only, batch (process a folder of images). Uses ANSI colours for readable terminal output.
+---
+
+### `tests/CLI.py`
+
+**`CLI`** — Command-line testing interface. Modes: full flow, vision only, audio only, batch (process a folder of images). Uses ANSI colours for readable terminal output. Requires a local `Orchestrator` instance (not the remote client).
 
 ---
 
@@ -115,14 +159,17 @@ models:
   llm_model_path: "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 database:
   db_path: "utils/license_plates_database.db"
+images:
+  path: "database_imgs/"
 ```
 
 ---
 
 ## Entry Points
 
-- **Production:** `python UI/GUI.py` — Tkinter GUI for gate deployment
-- **Testing/debug:** `python UI/CLI.py` — CLI with multi-mode testing
+- **Jetson server:** `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000`
+- **Laptop GUI:** `python UI/remote_frontend.py --host http://<jetson-ip>:8000`
+- **Testing/debug:** `python tests/CLI.py` — CLI with multi-mode testing (runs locally, requires ML models)
 - **Tests:** `pytest tests/` — ML and hardware dependencies are mocked via `sys.modules` injection in `tests/conftest.py`; a real temporary SQLite database is used for data-access tests
 
 ---
@@ -130,13 +177,15 @@ database:
 ## Deployment Notes (Jetson Orin NX)
 
 - USB microphone and USB speaker are likely required (onboard audio may not work)
-- Tkinter GUI may not work on Jetson; fall back to `CLI.py` if necessary
-- Use the ONNX model variant (`model_path_onnx`) for better CPU/GPU performance on Jetson
-- SQLite database uses `check_same_thread=False` for the GUI's background worker thread
+- The server uses ONNX mode by default (`model_path_onnx`) for better GPU performance; falls back to PyTorch automatically if ONNX init fails
+- SQLite database uses `check_same_thread=False` for concurrent request handling
+- Laptop dependencies (no ML packages required): `requests sounddevice numpy opencv-python Pillow`
 
 ---
 
 ## Known Issues
 
 - `LanguageModel` occasionally returns an empty string for plate parsing despite correct input — tracked in `Documentation.txt`
+- `tests/CLI.py` imports `Orchestrator` from `scripts.helpers`, but that class no longer exists there (it was removed when the system was refactored to client-server); the CLI needs updating to use `RemoteOrchestrator`
+- `tests/test_orchestrator.py` patches `scripts.orchestrator.VisionPipeline` which no longer exists; tests will fail until updated
 - Full Jetson deployment testing is pending; local CPU testing is functional

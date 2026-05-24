@@ -13,9 +13,9 @@ class VisionPipeline:
         self.onnx = onnx
         self.device = device
         if onnx:
-            self.vision_model: YOLO = YOLO(model=config["models"]["model_path_onnx"], task="detect")
+            self.vision_model: YOLO = YOLO(model=config["vision"]["yolo"]["onnx"], task="detect")
         else:
-            self.vision_model: YOLO = YOLO(model=config["models"]["model_path"], task="detect")
+            self.vision_model: YOLO = YOLO(model=config["vision"]["yolo"]["pt"], task="detect")
             self.vision_model.to(device)
 
         self.recognizer: LicensePlateRecognizer = LicensePlateRecognizer(
@@ -75,6 +75,7 @@ class VisionPipeline:
         return {
             "plate": prediction.plate,
             "conf": conf,
+            "region": prediction.region,
             "bbox": (x1, y1, x2, y2),
             "visual": results[0].plot(),   # annotated BGR array
         }

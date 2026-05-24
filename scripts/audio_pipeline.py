@@ -63,7 +63,7 @@ class Listener:
         # int8 is fast on CPU; float16 gets CUDA tensor cores on GPU.
         compute_type = "float16" if device == "cuda" else "int8"
         self.model: WhisperModel = WhisperModel(
-            model_size_or_path=conf["models"]["whisper_model_path"],
+            model_size_or_path=conf["tts"]["whisper"],
             device=device,
             compute_type=compute_type,
         )
@@ -179,14 +179,14 @@ class LanguageModel:
     def __init__(self, conf: Dict[str, Any], device="cpu") -> None:
         if device == "cuda":
             self.model = Llama(
-                model_path=conf["models"]["llm_model_path"],
+                model_path=conf["tts"]["llm"],
                 n_ctx=2048,
                 verbose=False,
                 n_gpu_layers=-1,  # ← uncomment to offload all layers to GPU
             )
         else:# CPU-only inference (fallback)
             self.model = Llama(
-                model_path=conf["models"]["llm_model_path"],
+                model_path=conf["tts"]["llm"],
                 n_ctx=2048,
                 verbose=False,
                 # n_gpu_layers=-1,  # ← uncomment to offload all layers to GPU

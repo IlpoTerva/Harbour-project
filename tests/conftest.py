@@ -18,6 +18,7 @@ Run from the project root:
 """
 
 import sys
+from itertools import cycle
 from pathlib import Path
 from unittest.mock import MagicMock
 import numpy as np
@@ -38,6 +39,20 @@ for _mod in [
     "requests",     # pulled in by client.py; not needed in tests
 ]:
     sys.modules[_mod] = MagicMock()
+
+# ── Configure sounddevice.InputStream for VAD recording ──────────────────────
+# _record_vad() opens an InputStream and calls stream.read() in a loop.
+# We return 4 high-energy frames (triggers speech onset) then 21 silent frames
+# (triggers silence stop after SILENCE_STOP_FRAMES=20), so the loop exits in
+# ~25 iterations rather than the full 500-frame safety cap.
+_VAD_FRAME_SAMPLES = 480
+_speech_frame = (np.full((_VAD_FRAME_SAMPLES, 1), 0.1, dtype=np.float32), False)
+_silence_frame = (np.zeros((_VAD_FRAME_SAMPLES, 1), dtype=np.float32), False)
+_vad_read_sequence = cycle([_speech_frame] * 4 + [_silence_frame] * 21)
+
+_sd_stream_mock = MagicMock()
+_sd_stream_mock.read.side_effect = _vad_read_sequence
+sys.modules["sounddevice"].InputStream.return_value.__enter__.return_value = _sd_stream_mock
 
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────

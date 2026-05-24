@@ -1,3 +1,4 @@
+import collections
 import sounddevice as sd
 import numpy as np
 import logging
@@ -5,8 +6,14 @@ from typing import Any, Dict, Optional, Tuple
 from client import HarbourClient
 from i18n import get as _t, SUPPORTED_LANGS
 
-_SAMPLE_RATE = 16_000
-
+_SAMPLE_RATE         = 16_000
+_CHANNELS            = 1
+_VAD_FRAME_SAMPLES   = 480   # 30 ms per frame at 16 kHz
+_ENERGY_THRESHOLD    = 0.01  # RMS amplitude; raise to 0.02–0.03 in noisy environments
+_SPEECH_ONSET_FRAMES = 3     # ~90 ms of speech required to start recording
+_SILENCE_STOP_FRAMES = 20    # ~600 ms of silence after speech to stop recording
+_PRE_SPEECH_FRAMES   = 10    # ~300 ms pre-roll so speech onset is not clipped
+_VAD_MAX_DURATION    = 15.0  # hard cap in seconds
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,19 +48,56 @@ class RemoteOrchestrator:
         sd.play(audio, samplerate=sample_rate)
         sd.wait()
 
-    def _record(self, duration: int) -> np.ndarray:
-        logger.info(f"Recording for {duration}s…")
-        audio = sd.rec(
-            int(duration * _SAMPLE_RATE),
-            samplerate=_SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-        )
-        sd.wait()
-        return audio.flatten()
+    def _record_vad(self) -> np.ndarray:
+        """Record until speech ends (VAD), with a hard cap of _VAD_MAX_DURATION."""
+        logger.info("Listening (VAD)…")
+        frames: list = []
+        pre_buffer: collections.deque = collections.deque(maxlen=_PRE_SPEECH_FRAMES)
+        speech_onset = 0
+        silence_count = 0
+        speech_started = False
+        max_frames = int(_VAD_MAX_DURATION * _SAMPLE_RATE / _VAD_FRAME_SAMPLES)
 
-    def _listen_and_transcribe(self, duration: int) -> Dict[str, Any]:
-        audio = self._record(duration)
+        with sd.InputStream(
+            samplerate=_SAMPLE_RATE,
+            channels=_CHANNELS,
+            dtype="float32",
+            blocksize=_VAD_FRAME_SAMPLES,
+        ) as stream:
+            for _ in range(max_frames):
+                block, _ = stream.read(_VAD_FRAME_SAMPLES)
+                block = block.flatten()
+                rms = float(np.sqrt(np.mean(block ** 2)))
+
+                if not speech_started:
+                    pre_buffer.append(block)
+                    if rms >= _ENERGY_THRESHOLD:
+                        speech_onset += 1
+                        if speech_onset >= _SPEECH_ONSET_FRAMES:
+                            speech_started = True
+                            frames.extend(pre_buffer)
+                            pre_buffer.clear()
+                            silence_count = 0
+                    else:
+                        speech_onset = 0
+                else:
+                    frames.append(block)
+                    if rms < _ENERGY_THRESHOLD:
+                        silence_count += 1
+                        if silence_count >= _SILENCE_STOP_FRAMES:
+                            break
+                    else:
+                        silence_count = 0
+
+        if not frames:
+            logger.warning("VAD: no speech detected within timeout")
+            return np.zeros(0, dtype=np.float32)
+        audio = np.concatenate(frames)
+        logger.info(f"VAD: captured {len(audio) / _SAMPLE_RATE:.2f}s of audio")
+        return audio
+
+    def _listen_and_transcribe(self) -> Dict[str, Any]:
+        audio = self._record_vad()
         text, detected_lang = self.client.transcribe(audio)
         if detected_lang and detected_lang in SUPPORTED_LANGS:
             if detected_lang != self._lang:
@@ -64,7 +108,7 @@ class RemoteOrchestrator:
     # ── Conversation helpers ──────────────────────────────────────────────────
 
     def _request_plate_from_driver(
-        self, vision_output: Optional[Dict], duration: int = 6
+        self, vision_output: Optional[Dict]
     ) -> Dict[str, Any]:
         if vision_output and vision_output.get("conf", 0) >= 0.5:
             plate_letters = " ".join(vision_output["plate"])
@@ -72,22 +116,22 @@ class RemoteOrchestrator:
         else:
             prompt = _t("plate_not_read", self._lang)
         self._speak(prompt)
-        result = self._listen_and_transcribe(duration)
+        result = self._listen_and_transcribe()
         result["plate"] = self.client.parse_plate(result["transcription"])
         logger.info(f"Driver-provided plate: {result['plate']!r}")
         return result
 
-    def _confirm_plate_with_driver(self, plate: str, duration: int = 4) -> bool:
+    def _confirm_plate_with_driver(self, plate: str) -> bool:
         plate_letters = " ".join(plate)
         self._speak(_t("confirm_plate", self._lang, plate=plate_letters))
-        result = self._listen_and_transcribe(duration)
+        result = self._listen_and_transcribe()
         confirmed = self.client.parse_yes_no(result["transcription"])
         logger.info(f"Plate {plate!r} confirmed: {confirmed}")
         return confirmed
 
-    def _request_driver_name(self, duration: int = 5) -> str:
+    def _request_driver_name(self) -> str:
         self._speak(_t("request_name", self._lang))
-        result = self._listen_and_transcribe(duration)
+        result = self._listen_and_transcribe()
         name = self.client.extract_name(result["transcription"])
         logger.info(f"Driver name: {name!r}")
         return name

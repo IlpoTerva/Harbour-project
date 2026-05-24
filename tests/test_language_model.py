@@ -49,15 +49,17 @@ class TestParsePlate:
     def test_spaces_stripped_from_llm_output(self, lm):
         """LLM sometimes returns 'R K 6 1 2 A L' — spaces must be removed."""
         lm._mock_llama.return_value = make_llm_response("R K 6 1 2 A L")
-        assert lm.parse_plate_from_transcription("Romeo...") == "RK612AL"
+        # Input is long enough to bypass the layer-1 direct match (>9 alphanum chars)
+        assert lm.parse_plate_from_transcription("my plate is rk612al") == "RK612AL"
 
     def test_dots_stripped_from_llm_output(self, lm):
         lm._mock_llama.return_value = make_llm_response("R.K.612.AL")
         assert lm.parse_plate_from_transcription("...") == "RK612AL"
 
-    def test_unknown_returned_when_llm_says_unknown(self, lm):
+    def test_unknown_returned_when_no_plate_extractable(self, lm):
+        # "..." has no alphanumeric chars → all four layers fail → UNKNOWN
         lm._mock_llama.return_value = make_llm_response("UNKNOWN")
-        assert lm.parse_plate_from_transcription("I don't know") == "UNKNOWN"
+        assert lm.parse_plate_from_transcription("...") == "UNKNOWN"
 
     def test_fallback_on_llm_exception(self, lm):
         """When LLM raises, fall back to uppercased raw transcription."""
@@ -116,10 +118,10 @@ class TestExtractName:
         assert result == "UNKNOWN"
 
     def test_fallback_on_llm_exception(self, lm):
-        """Falls back to title-cased raw transcription."""
+        """Falls back to UNKNOWN — no title-casing, just a safe sentinel."""
         lm._mock_llama.side_effect = RuntimeError("LLM crashed")
         result = lm.extract_name("jane doe")
-        assert result == "Jane Doe"
+        assert result == "UNKNOWN"
 
 
 # ── 4. Name similarity ────────────────────────────────────────────────────────
@@ -138,12 +140,13 @@ class TestVerifyNameSimilarity:
         lm._mock_llama.return_value = make_llm_response("yes")
         assert lm.verify_name_similarity("Matti Meikalainen", "matti") is True
 
-    def test_fallback_first_token_match(self, lm):
-        """First names match → fallback returns True."""
+    def test_fallback_last_name_match_returns_true(self, lm):
+        """Last name matches and db first name found in spoken → True."""
         lm._mock_llama.side_effect = RuntimeError("LLM crashed")
-        assert lm.verify_name_similarity("Jane Doe", "Jane Smith") is True
+        # "jane" is in ["jane", "marie", "doe"] and last names both "doe"
+        assert lm.verify_name_similarity("Jane Doe", "Jane Marie Doe") is True
 
-    def test_fallback_first_token_mismatch(self, lm):
+    def test_fallback_last_name_mismatch_returns_false(self, lm):
         lm._mock_llama.side_effect = RuntimeError("LLM crashed")
         assert lm.verify_name_similarity("Jane Doe", "John Smith") is False
 

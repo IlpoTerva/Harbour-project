@@ -9,16 +9,24 @@ into sys.modules *before* any test file imports scripts.*. This means:
   - All ML calls are MagicMocks by default; individual tests configure
     return values to exercise specific code paths.
 
+The UI/ directory is added to sys.path so that remote_orchestrator and client
+can be imported directly (they use bare-name imports rather than UI.* package
+imports, matching how they are run in production from within the UI/ directory).
+
 Run from the project root:
     pytest tests/ -v
 """
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-# ── Prevent ModuleNotFoundError for ML / hardware dependencies ────────────────
+# Allow `from remote_orchestrator import ...` and `from client import ...`
+sys.path.insert(0, str(Path(__file__).parent.parent / "UI"))
+
+# ── Prevent ModuleNotFoundError for ML / hardware / HTTP dependencies ─────────
 for _mod in [
     "llama_cpp",
     "faster_whisper",
@@ -26,6 +34,8 @@ for _mod in [
     "sounddevice",
     "ultralytics",
     "fast_plate_ocr",
+    "client",       # HarbourClient HTTP wrapper — mocked per-test via MagicMock()
+    "requests",     # pulled in by client.py; not needed in tests
 ]:
     sys.modules[_mod] = MagicMock()
 

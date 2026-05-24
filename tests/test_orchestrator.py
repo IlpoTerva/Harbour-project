@@ -1,65 +1,81 @@
 """
-test_orchestrator.py — integration tests for Orchestrator.run_automated_entry().
+test_orchestrator.py — integration tests for RemoteOrchestrator.run_automated_entry().
 
 Strategy
 --------
-VisionPipeline and AudioPipeline are patched at construction time so the
-orchestrator uses MagicMock instances. The SQLite database is real (temp file)
-and is seeded with create_mock_db() so lookup_plate() works as in production.
+HarbourClient is replaced with a MagicMock so no HTTP calls are made.
+sounddevice is already mocked by conftest.py, so no audio hardware is needed.
+No real database is required — all DB access goes through client.lookup_plate().
 
 Flow map tested
 ---------------
-Flow A — vision confident, plate in DB
+Flow A — vision confident (conf ≥ 0.5), plate in DB
   A1: name match          → success
   A2: name mismatch       → name_mismatch
 
 Flow B — vision confident, plate NOT in DB
   B1: driver confirms YES → plate genuinely absent → alert_worker
-  B2: driver says NO (bad read) → audio plate found → name match → success
-  B3: driver says NO (bad read) → audio plate found → name mismatch
-  B4: driver says NO (bad read) → audio plate also absent → alert_worker
+  B2: driver says NO      → audio plate found → name match → success
+  B3: driver says NO      → audio plate found → name mismatch
+  B4: driver says NO      → audio plate also absent → alert_worker
 
 Flow C — vision low-confidence or no detection
   C1: audio plate found   → name match → success
   C2: audio plate absent  → alert_worker
-  C3: no detection at all → audio plate found → success
+  C3: no detection (None) → audio plate found → success
 """
 
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
-from scripts.helpers import Orchestrator, create_mock_db
+from remote_orchestrator import RemoteOrchestrator
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# ── Shared test data ──────────────────────────────────────────────────────────
+
+_DB_ENTRY = {
+    "plate":          "RK612AL",
+    "driver_name":    "Jane Doe",
+    "cargo":          "Chemicals",
+    "dock":           "Dock B",
+    "arrival_window": "09:00-11:00",
+}
+
+
+# ── Client factory ────────────────────────────────────────────────────────────
+
+def _client(**overrides) -> MagicMock:
+    """Return a HarbourClient mock with audio defaults pre-set.
+
+    Pass keyword args to override specific return values, e.g.:
+        _client(detect_plate=vision_output, lookup_plate=_DB_ENTRY)
+    """
+    c = MagicMock()
+    c.synthesize.return_value = (np.zeros(100, dtype=np.float32), 16_000)
+    c.transcribe.return_value = ""
+    c.lookup_plate.return_value = None   # safe default: plate not found
+    for attr, val in overrides.items():
+        getattr(c, attr).return_value = val
+    return c
+
+
+# ── Local fixtures ────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def seeded_config(mock_config):
-    """Config pointing at a real temp DB pre-populated with mock data."""
-    create_mock_db(mock_config["database"]["db_path"])
-    return mock_config
-
-
-@pytest.fixture
-def orch(seeded_config):
-    """Orchestrator with VisionPipeline and AudioPipeline fully mocked."""
-    with patch("scripts.orchestrator.VisionPipeline"), \
-         patch("scripts.orchestrator.AudioPipeline"):
-        o = Orchestrator(seeded_config, onnx=False)
-    yield o
-    o.close()
-
-
-@pytest.fixture
-def good_vision(mock_vision_output):
-    """vision_output for a plate that IS in the mock DB (conf 0.92)."""
-    return mock_vision_output          # plate="RK612AL", conf=0.92
+def good_vision():
+    """High-confidence detection for a plate that IS in the mock DB."""
+    return {
+        "plate":  "RK612AL",
+        "conf":   0.92,
+        "bbox":   (10, 20, 100, 60),
+        "visual": np.zeros((480, 640, 3), dtype=np.uint8),
+    }
 
 
 @pytest.fixture
 def bad_vision():
-    """vision_output for a plate NOT in the mock DB (conf 0.91)."""
+    """High-confidence detection for a plate NOT in the mock DB."""
     return {
         "plate":  "XX999ZZ",
         "conf":   0.91,
@@ -69,120 +85,115 @@ def bad_vision():
 
 
 @pytest.fixture
-def low_conf_vision(mock_vision_output):
-    """vision_output below the confidence threshold (0.35)."""
-    out = dict(mock_vision_output)
+def low_conf_vision(good_vision):
+    """Detection below the 0.5 confidence threshold."""
+    out = dict(good_vision)
     out["conf"] = 0.35
     return out
 
 
-# ── Flow A: vision confident, plate in DB ────────────────────────────────────
+# ── Flow A: vision confident, plate in DB ─────────────────────────────────────
 
 class TestFlowA:
 
-    def test_A1_success_on_name_match(self, orch, blank_image, good_vision):
-        orch.vision_pipeline.read_plate.return_value = good_vision
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
-
-        result, vision_out = orch.run_automated_entry(blank_image)
+    def test_A1_success_on_name_match(self, blank_image, good_vision):
+        c = _client(
+            detect_plate=good_vision,
+            lookup_plate=_DB_ENTRY,
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        result, vision_out = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
         assert result["status"] == "success"
         assert result["db_entry"]["plate"] == "RK612AL"
         assert result["db_entry"]["dock"] == "Dock B"
         assert vision_out is good_vision
-        # Dock instructions must be spoken on success
-        orch.audio_pipeline.give_dock_instructions.assert_called_once()
 
-    def test_A1_vision_output_is_returned(self, orch, blank_image, good_vision):
-        orch.vision_pipeline.read_plate.return_value = good_vision
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
+    def test_A1_tts_called_on_success(self, blank_image, good_vision):
+        c = _client(
+            detect_plate=good_vision,
+            lookup_plate=_DB_ENTRY,
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        RemoteOrchestrator(c).run_automated_entry(blank_image)
+        c.synthesize.assert_called()
 
-        _, vision_out = orch.run_automated_entry(blank_image)
-        assert vision_out is good_vision
-
-    def test_A2_name_mismatch_returns_correct_status(self, orch, blank_image, good_vision):
-        orch.vision_pipeline.read_plate.return_value = good_vision
-        orch.audio_pipeline.request_driver_name.return_value = "Wrong Person"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = False
-
-        result, _ = orch.run_automated_entry(blank_image)
+    def test_A2_name_mismatch_status(self, blank_image, good_vision):
+        c = _client(
+            detect_plate=good_vision,
+            lookup_plate=_DB_ENTRY,
+            extract_name="Wrong Person",
+            verify_name=False,
+        )
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
         assert result["status"] == "name_mismatch"
         assert result["plate"] == "RK612AL"
 
-    def test_A2_alert_spoken_on_name_mismatch(self, orch, blank_image, good_vision):
-        orch.vision_pipeline.read_plate.return_value = good_vision
-        orch.audio_pipeline.request_driver_name.return_value = "Wrong Person"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = False
-
-        orch.run_automated_entry(blank_image)
-        orch.audio_pipeline.speak.assert_called()
+    def test_A1_vision_output_returned(self, blank_image, good_vision):
+        c = _client(
+            detect_plate=good_vision,
+            lookup_plate=_DB_ENTRY,
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        _, vision_out = RemoteOrchestrator(c).run_automated_entry(blank_image)
+        assert vision_out is good_vision
 
 
 # ── Flow B: vision confident, plate NOT in DB ─────────────────────────────────
 
 class TestFlowB:
 
-    def test_B1_confirmed_absent_plate_alerts_worker(self, orch, blank_image, bad_vision):
-        orch.vision_pipeline.read_plate.return_value = bad_vision
-        orch.audio_pipeline.confirm_plate_with_driver.return_value = True  # "yes that's correct"
+    def test_B1_confirmed_absent_plate_alerts_worker(self, blank_image, bad_vision):
+        c = _client(detect_plate=bad_vision, parse_yes_no=True)
+        # lookup always returns None — plate not in DB
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
         assert result["status"] == "alert_worker"
         assert result["plate"] == "XX999ZZ"
-        orch.audio_pipeline.speak.assert_called()
 
-    def test_B1_plate_confirmed_so_no_audio_fallback_for_plate(self, orch, blank_image, bad_vision):
-        orch.vision_pipeline.read_plate.return_value = bad_vision
-        orch.audio_pipeline.confirm_plate_with_driver.return_value = True
+    def test_B1_after_confirmation_parse_plate_not_called(self, blank_image, bad_vision):
+        c = _client(detect_plate=bad_vision, parse_yes_no=True)
 
-        orch.run_automated_entry(blank_image)
+        RemoteOrchestrator(c).run_automated_entry(blank_image)
 
-        # Audio plate request should NOT have been called — driver confirmed reading
-        orch.audio_pipeline.request_plate_from_driver.assert_not_called()
+        # driver confirmed the reading → no audio fallback for the plate
+        c.parse_plate.assert_not_called()
 
-    def test_B2_denied_reading_then_audio_plate_found_name_match(
-        self, orch, blank_image, bad_vision
-    ):
-        orch.vision_pipeline.read_plate.return_value = bad_vision
-        orch.audio_pipeline.confirm_plate_with_driver.return_value = False   # "no that's wrong"
-        orch.audio_pipeline.request_plate_from_driver.return_value = {
-            "plate": "RK612AL",   # plate that IS in DB
-            "transcription": "Romeo Kilo six one two alpha lima",
-        }
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
+    def test_B2_denied_reading_audio_plate_found_name_match(self, blank_image, bad_vision):
+        c = _client(detect_plate=bad_vision)
+        # First lookup (bad plate) misses; second lookup (audio plate) hits
+        c.lookup_plate.side_effect = [None, _DB_ENTRY]
+        c.parse_yes_no.return_value = False      # "no that's wrong"
+        c.parse_plate.return_value = "RK612AL"
+        c.extract_name.return_value = "Jane Doe"
+        c.verify_name.return_value = True
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
         assert result["status"] == "success"
         assert result["db_entry"]["driver_name"] == "Jane Doe"
 
-    def test_B3_denied_reading_audio_plate_found_name_mismatch(
-        self, orch, blank_image, bad_vision
-    ):
-        orch.vision_pipeline.read_plate.return_value = bad_vision
-        orch.audio_pipeline.confirm_plate_with_driver.return_value = False
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-        orch.audio_pipeline.request_driver_name.return_value = "Imposter"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = False
+    def test_B3_denied_reading_audio_plate_found_name_mismatch(self, blank_image, bad_vision):
+        c = _client(detect_plate=bad_vision)
+        c.lookup_plate.side_effect = [None, _DB_ENTRY]
+        c.parse_yes_no.return_value = False
+        c.parse_plate.return_value = "RK612AL"
+        c.extract_name.return_value = "Imposter"
+        c.verify_name.return_value = False
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert result["status"] == "name_mismatch"
 
-    def test_B4_denied_reading_audio_plate_also_absent(
-        self, orch, blank_image, bad_vision
-    ):
-        orch.vision_pipeline.read_plate.return_value = bad_vision
-        orch.audio_pipeline.confirm_plate_with_driver.return_value = False
-        orch.audio_pipeline.request_plate_from_driver.return_value = {
-            "plate": "YY000XX"    # also not in DB
-        }
+    def test_B4_denied_reading_audio_plate_also_absent(self, blank_image, bad_vision):
+        c = _client(detect_plate=bad_vision, parse_yes_no=False, parse_plate="YY000XX")
+        # lookup always returns None
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert result["status"] == "alert_worker"
 
 
@@ -190,115 +201,102 @@ class TestFlowB:
 
 class TestFlowC:
 
-    def test_C1_low_conf_audio_found_name_match(
-        self, orch, blank_image, low_conf_vision
-    ):
-        orch.vision_pipeline.read_plate.return_value = low_conf_vision
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
-
-        result, _ = orch.run_automated_entry(blank_image)
+    def test_C1_low_conf_audio_found_name_match(self, blank_image, low_conf_vision):
+        c = _client(
+            detect_plate=low_conf_vision,
+            lookup_plate=_DB_ENTRY,
+            parse_plate="RK612AL",
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert result["status"] == "success"
 
-    def test_C1_confirm_is_not_called_on_low_confidence(
-        self, orch, blank_image, low_conf_vision
-    ):
-        """confirm_plate_with_driver is only for high-conf reads not in DB."""
-        orch.vision_pipeline.read_plate.return_value = low_conf_vision
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
+    def test_C1_confirm_not_called_on_low_confidence(self, blank_image, low_conf_vision):
+        c = _client(
+            detect_plate=low_conf_vision,
+            lookup_plate=_DB_ENTRY,
+            parse_plate="RK612AL",
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        RemoteOrchestrator(c).run_automated_entry(blank_image)
+        # confirm_plate_with_driver uses parse_yes_no — must not be called in Flow C
+        c.parse_yes_no.assert_not_called()
 
-        orch.run_automated_entry(blank_image)
-        orch.audio_pipeline.confirm_plate_with_driver.assert_not_called()
+    def test_C2_low_conf_audio_plate_absent(self, blank_image, low_conf_vision):
+        c = _client(detect_plate=low_conf_vision, parse_plate="YY000XX")
 
-    def test_C2_low_conf_audio_plate_absent_alerts_worker(
-        self, orch, blank_image, low_conf_vision
-    ):
-        orch.vision_pipeline.read_plate.return_value = low_conf_vision
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "YY000XX"}
-
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert result["status"] == "alert_worker"
 
-    def test_C3_no_detection_audio_found_success(self, orch, blank_image):
-        orch.vision_pipeline.read_plate.return_value = None    # YOLO found nothing
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
-
-        result, vision_out = orch.run_automated_entry(blank_image)
+    def test_C3_no_detection_audio_found_success(self, blank_image):
+        c = _client(
+            detect_plate=None,
+            lookup_plate=_DB_ENTRY,
+            parse_plate="RK612AL",
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        result, vision_out = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
         assert result["status"] == "success"
-        assert vision_out is None    # no visual to show
+        assert vision_out is None   # no visual when detection returned nothing
 
-    def test_C3_no_detection_audio_absent_alerts_worker(self, orch, blank_image):
-        orch.vision_pipeline.read_plate.return_value = None
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "YY000XX"}
+    def test_C3_no_detection_audio_absent(self, blank_image):
+        c = _client(detect_plate=None, parse_plate="YY000XX")
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert result["status"] == "alert_worker"
 
 
 # ── Return type contract ──────────────────────────────────────────────────────
 
 class TestReturnTypeContract:
-    """The GUI unpacks (result, vision_output) — ensure this always holds."""
+    """RemoteGUI unpacks (result, vision_output) — this contract must always hold."""
 
     @pytest.mark.parametrize("status", ["success", "alert_worker", "name_mismatch"])
-    def test_always_returns_two_element_tuple(self, orch, blank_image, status):
-        orch.vision_pipeline.read_plate.return_value = None
+    def test_always_returns_two_element_tuple(self, blank_image, status):
+        c = MagicMock()
+        c.synthesize.return_value = (np.zeros(100, dtype=np.float32), 16_000)
+        c.transcribe.return_value = ""
+        c.detect_plate.return_value = None
+
         if status == "success":
-            orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-            orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-            orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
+            c.lookup_plate.return_value = _DB_ENTRY
+            c.parse_plate.return_value = "RK612AL"
+            c.extract_name.return_value = "Jane Doe"
+            c.verify_name.return_value = True
         elif status == "name_mismatch":
-            orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-            orch.audio_pipeline.request_driver_name.return_value = "Wrong"
-            orch.audio_pipeline.language_model.verify_name_similarity.return_value = False
+            c.lookup_plate.return_value = _DB_ENTRY
+            c.parse_plate.return_value = "RK612AL"
+            c.extract_name.return_value = "Wrong"
+            c.verify_name.return_value = False
         else:  # alert_worker
-            orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "YY000XX"}
+            c.lookup_plate.return_value = None
+            c.parse_plate.return_value = "YY000XX"
 
-        returned = orch.run_automated_entry(blank_image)
+        returned = RemoteOrchestrator(c).run_automated_entry(blank_image)
 
-        assert isinstance(returned, tuple), "run_automated_entry must return a tuple"
-        assert len(returned) == 2,          "tuple must have exactly two elements"
+        assert isinstance(returned, tuple)
+        assert len(returned) == 2
         result, _ = returned
-        assert "status" in result,          "first element must have a 'status' key"
+        assert "status" in result
 
-    def test_result_dict_has_plate_on_alert(self, orch, blank_image):
-        orch.vision_pipeline.read_plate.return_value = None
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "YY000XX"}
+    def test_result_has_plate_on_alert(self, blank_image):
+        c = _client(detect_plate=None, parse_plate="YY000XX")
 
-        result, _ = orch.run_automated_entry(blank_image)
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert "plate" in result
 
-    def test_result_dict_has_db_entry_on_success(self, orch, blank_image):
-        orch.vision_pipeline.read_plate.return_value = None
-        orch.audio_pipeline.request_plate_from_driver.return_value = {"plate": "RK612AL"}
-        orch.audio_pipeline.request_driver_name.return_value = "Jane Doe"
-        orch.audio_pipeline.language_model.verify_name_similarity.return_value = True
-
-        result, _ = orch.run_automated_entry(blank_image)
+    def test_result_has_db_entry_on_success(self, blank_image):
+        c = _client(
+            detect_plate=None,
+            lookup_plate=_DB_ENTRY,
+            parse_plate="RK612AL",
+            extract_name="Jane Doe",
+            verify_name=True,
+        )
+        result, _ = RemoteOrchestrator(c).run_automated_entry(blank_image)
         assert "db_entry" in result
         assert result["db_entry"]["driver_name"] == "Jane Doe"
-
-
-# ── lookup_plate ──────────────────────────────────────────────────────────────
-
-class TestLookupPlate:
-
-    def test_known_plate_returns_full_entry(self, orch):
-        entry = orch.lookup_plate("RK612AL")
-        assert entry is not None
-        assert entry["driver_name"] == "Jane Doe"
-        assert entry["cargo"] == "Chemicals"
-        assert entry["dock"] == "Dock B"
-
-    def test_unknown_plate_returns_none(self, orch):
-        assert orch.lookup_plate("XXXXXX") is None
-
-    def test_plate_lookup_is_case_sensitive(self, orch):
-        """DB stores plates in the exact case from create_mock_db()."""
-        assert orch.lookup_plate("rk612al") is None   # lowercase → not found

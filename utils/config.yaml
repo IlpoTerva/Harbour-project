@@ -1,9 +1,3 @@
-models:
-  model_path: "models/license_plate_model.pt"
-  model_path_onnx: "models/license_plate_model.onnx"
-  whisper_model_path: "models/whisper_small/"
-  fast_ocr_model_path: "models/cct_s_v2_global_model_config.yaml"
-  llm_model_path: "models/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 database:
   db_path: "utils/license_plates_database.db"
 images:
@@ -11,7 +5,16 @@ images:
 speech:
   default_language: "en"
   piper_models:
-    en: "models/en_US-hfc_female-medium.onnx"
-    es: "models/es_ES-davefx-medium.onnx"
-    fr: "models/fr_FR-siwis-medium.onnx"
-    pt: "models/pt_PT-tugao-medium.onnx"
+    en: "models/piper_models/en/en_US-hfc_female-medium.onnx"
+    es: "models/piper_models/es/es_ES-sharvard-medium.onnx"
+    fr: "models/piper_models/fr/fr_FR-siwis-medium.onnx"
+    pt: "models/piper_models/pt/pt_PT-tugao-medium.onnx"
+vision:
+  yolo:
+    pt: "models/vision/license_plate_model.pt"
+    onnx: "models/vision/license_plate_model.onnx"
+  fast_ocr:
+    model_path: "models/vision/cct_s_v2_global_model_config.yaml"
+tts:
+  whisper: "models/whisper_small/"
+  llm: "models/LLM/Llama-3.2-1B-Instruct-Q4_K_M.gguf"

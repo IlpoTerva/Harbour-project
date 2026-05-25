@@ -86,7 +86,7 @@ FastAPI server that runs on the Jetson. Loads all ML models and the SQLite datab
 | `/llm/verify_name` | POST | db_name + spoken_name → bool |
 | `/db/lookup` | POST | plate → DB entry or null |
 
-Start with: `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000`
+Start with: `./start_server.sh` (uses `harbourenv` conda env; wraps `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 10`)
 
 ---
 
@@ -167,7 +167,7 @@ images:
 
 ## Entry Points
 
-- **Jetson server:** `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000`
+- **Jetson server:** `./start_server.sh` (launches uvicorn via the `harbourenv` conda environment with graceful shutdown)
 - **Laptop GUI:** `python UI/remote_frontend.py --host http://<jetson-ip>:8000`
 - **Testing/debug:** `python tests/CLI.py` — CLI with multi-mode testing (runs locally, requires ML models)
 - **Tests:** `pytest tests/` — ML and hardware dependencies are mocked via `sys.modules` injection in `tests/conftest.py`; a real temporary SQLite database is used for data-access tests
@@ -180,12 +180,3 @@ images:
 - The server uses ONNX mode by default (`model_path_onnx`) for better GPU performance; falls back to PyTorch automatically if ONNX init fails
 - SQLite database uses `check_same_thread=False` for concurrent request handling
 - Laptop dependencies (no ML packages required): `requests sounddevice numpy opencv-python Pillow`
-
----
-
-## Known Issues
-
-- `LanguageModel` occasionally returns an empty string for plate parsing despite correct input — tracked in `Documentation.txt`
-- `tests/CLI.py` imports `Orchestrator` from `scripts.helpers`, but that class no longer exists there (it was removed when the system was refactored to client-server); the CLI needs updating to use `RemoteOrchestrator`
-- `tests/test_orchestrator.py` patches `scripts.orchestrator.VisionPipeline` which no longer exists; tests will fail until updated
-- Full Jetson deployment testing is pending; local CPU testing is functional

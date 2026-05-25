@@ -1,10 +1,10 @@
-# Harbour Agent: Multimodal Edge AI Assistant
+# ⚓ Harbour Agent: Multimodal Edge AI Assistant
 
 > **High-performance, real-time multimodal AI agent designed specifically for edge deployment.**
 
 Optimized for the **NVIDIA Jetson Orin NX**, this project integrates state-of-the-art vision, speech, and reasoning models to interact with its environment autonomously.
 
-## Project Overview
+## 🚀 Project Overview
 
 The Harbour Agent acts as an intelligent observer and interlocutor. By combining local Large Language Models (LLMs) with high-speed vision and audio pipelines, it can "see" objects and license plates, "hear" verbal commands, and "speak" back to the user with minimal latency.
 
@@ -14,22 +14,22 @@ The system supports multilingual driver interactions in **English, Spanish, Fren
 
 ---
 
-## Core Technology Stack
+## 🛠️ Core Technology Stack
 
 > **The project leverages a specialized stack chosen for the balance between accuracy and edge-device throughput:**
 
-### Computer Vision
+### 👁️ Computer Vision
 - **YOLOv11** (ultralytics): Real-time license plate bounding-box detection. Runs in ONNX mode on the Jetson for optimal GPU performance; falls back to PyTorch automatically.
 - **Fast-Plate-OCR** (`cct-s-v2-global-model`): Optimized optical character recognition specifically for vehicle identification.
 
-### Language & Reasoning
+### 🧠 Language & Reasoning
 - **Llama 3.2 1B Instruct** (llama-cpp-python, GGUF Q4_K_M): A compact but powerful LLM running locally with full CUDA acceleration. Used exclusively for understanding driver speech — plate parsing, yes/no classification, name extraction, and fuzzy name matching.
 
-### Audio Pipeline
+### 🎙️ Audio Pipeline
 - **Faster-Whisper** (CTranslate2): Ultra-fast Speech-to-Text with automatic language detection (ISO 639-1). Returns both the transcription and the detected language code.
 - **Piper TTS**: Fast, local neural text-to-speech with per-language voice models (EN, ES, FR, PT). Models are lazy-loaded on first use and cached; adding a new language requires only a config entry.
 
-### Infrastructure
+### ⚙️ Infrastructure
 - **FastAPI + uvicorn**: REST server running on the Jetson — all ML inference and DB lookups stay on-device.
 - **SQLite**: Vehicle manifest database.
 - **Tkinter**: Laptop-side GUI; no ML packages required on the client.

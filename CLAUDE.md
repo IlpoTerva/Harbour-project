@@ -137,11 +137,6 @@ Utility functions shared across server and tests:
 - **`create_mock_db(db_path)`** — Seeds a SQLite database with six demo trucks (plate, driver_name, cargo, dock, arrival_window).
 - **`read_config(path)`** — Loads `utils/config.yaml` and returns it as a dict.
 
----
-
-### `tests/CLI.py`
-
-**`CLI`** — Command-line testing interface. Modes: full flow, vision only, audio only, batch (process a folder of images). Uses ANSI colours for readable terminal output. Requires a local `Orchestrator` instance (not the remote client).
 
 ---
 

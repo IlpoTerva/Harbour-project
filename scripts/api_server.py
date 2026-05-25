@@ -260,3 +260,23 @@ def lookup_plate(req: LookupRequest) -> Dict[str, Any]:
             "arrival_window": row[4],
         },
     }
+
+
+@app.get("/db/all")
+def list_all_plates() -> list:
+    cursor = _db.cursor()
+    cursor.execute(
+        "SELECT plate, driver_name, cargo, dock, arrival_window "
+        "FROM license_plates ORDER BY id"
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "plate":          row[0],
+            "driver_name":    row[1],
+            "cargo":          row[2],
+            "dock":           row[3],
+            "arrival_window": row[4],
+        }
+        for row in rows
+    ]

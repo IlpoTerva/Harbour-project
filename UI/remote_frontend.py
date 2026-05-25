@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 import tkinter as tk
-from tkinter import filedialog, scrolledtext
+from tkinter import filedialog, scrolledtext, ttk
 
 from client import HarbourClient
 from remote_orchestrator import RemoteOrchestrator
@@ -87,6 +87,18 @@ class RemoteGUI:
             width=25,
         )
         self.import_btn.pack(pady=10)
+
+        self.db_btn = tk.Button(
+            left,
+            text="VIEW DATABASE",
+            command=self.open_db_window,
+            bg="#27ae60",
+            fg="white",
+            font=("Helvetica", 12, "bold"),
+            height=2,
+            width=25,
+        )
+        self.db_btn.pack(pady=(0, 10))
 
         # ── Right column: log box ─────────────────────────────────────────────
         right = tk.Frame(main)
@@ -151,6 +163,98 @@ class RemoteGUI:
             args=(raw_image,),
             daemon=True,
         ).start()
+
+    def open_db_window(self) -> None:
+        popup = tk.Toplevel(self.root)
+        popup.title("Truck Database")
+        popup.configure(bg="#2c3e50")
+        popup.resizable(True, True)
+
+        tk.Label(
+            popup,
+            text="Registered Trucks",
+            font=("Helvetica", 14, "bold"),
+            bg="#2c3e50",
+            fg="white",
+        ).pack(pady=(12, 4))
+
+        status_var = tk.StringVar(value="Loading…")
+        status_label = tk.Label(
+            popup,
+            textvariable=status_var,
+            font=("Helvetica", 10),
+            bg="#2c3e50",
+            fg="white",
+        )
+        status_label.pack()
+
+        frame = tk.Frame(popup, bg="#2c3e50")
+        frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+
+        columns = ("plate", "driver_name", "cargo", "dock", "arrival_window")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=10)
+
+        col_labels = {
+            "plate":          "Plate",
+            "driver_name":    "Driver Name",
+            "cargo":          "Cargo",
+            "dock":           "Dock",
+            "arrival_window": "Arrival Window",
+        }
+        col_widths = {
+            "plate":          90,
+            "driver_name":    150,
+            "cargo":          120,
+            "dock":           70,
+            "arrival_window": 110,
+        }
+        for col in columns:
+            tree.heading(col, text=col_labels[col])
+            tree.column(col, width=col_widths[col], anchor=tk.CENTER)
+
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _fetch():
+            try:
+                rows = self.orchestrator.client.list_all_plates()
+                def _populate():
+                    for item in tree.get_children():
+                        tree.delete(item)
+                    for row in rows:
+                        tree.insert(
+                            "",
+                            tk.END,
+                            values=(
+                                row["plate"],
+                                row["driver_name"],
+                                row["cargo"],
+                                row["dock"],
+                                row["arrival_window"],
+                            ),
+                        )
+                    status_var.set(f"{len(rows)} record(s) loaded.")
+                self.root.after(0, _populate)
+            except Exception as exc:
+                self.root.after(0, lambda: status_var.set(f"Error: {exc}"))
+
+        def _refresh():
+            status_var.set("Loading…")
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        tk.Button(
+            popup,
+            text="Refresh",
+            command=_refresh,
+            bg="#27ae60",
+            fg="white",
+            font=("Helvetica", 11, "bold"),
+            width=12,
+        ).pack(pady=(4, 12))
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def _flow_worker(self, raw_image: np.ndarray) -> None:
         try:

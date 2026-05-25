@@ -164,7 +164,6 @@ images:
 
 - **Jetson server:** `./start_server.sh` (launches uvicorn via the `harbourenv` conda environment with graceful shutdown)
 - **Laptop GUI:** `python UI/remote_frontend.py --host http://<jetson-ip>:8000`
-- **Testing/debug:** `python tests/CLI.py` — CLI with multi-mode testing (runs locally, requires ML models)
 - **Tests:** `pytest tests/` — ML and hardware dependencies are mocked via `sys.modules` injection in `tests/conftest.py`; a real temporary SQLite database is used for data-access tests
 
 ---

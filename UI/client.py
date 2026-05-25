@@ -138,3 +138,8 @@ class HarbourClient:
         resp.raise_for_status()
         data = resp.json()
         return data["entry"] if data["found"] else None
+
+    def list_all_plates(self) -> list:
+        resp = requests.get(f"{self.base}/db/all", timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()

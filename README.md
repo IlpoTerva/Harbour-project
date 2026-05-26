@@ -194,7 +194,7 @@ All model paths, database path, and language settings are defined in `utils/conf
 
 ```yaml
 database:
-  db_path: "utils/license_plates_database.db"
+  db_path: "utils/<database_name>.db"
 images:
   path: "database_imgs/"
 speech:
@@ -219,17 +219,7 @@ tts:
 
 ## Entry Points
 
-- **Jetson server:** `./start_server.sh` (launches uvicorn via the `harbourenv` conda environment with graceful shutdown)
+- **Jetson server:** `uvicorn scripts.api_server:app --host 0.0.0.0 --port 8000`
 - **Laptop GUI:** `python UI/remote_frontend.py --host http://<jetson-ip>:8000`
-- **Testing/debug:** `python tests/CLI.py` — CLI with multi-mode testing (runs locally, requires ML models)
-- **Tests:** `pytest tests/` — ML and hardware dependencies are mocked via `sys.modules` injection in `tests/conftest.py`; a real temporary SQLite database is used for data-access tests
 
----
 
-## Deployment Notes (Jetson Orin NX)
-
-- USB microphone and USB speaker are likely required (onboard audio may not work)
-- The server uses ONNX mode by default for better GPU performance; falls back to PyTorch automatically if ONNX init fails
-- SQLite database uses `check_same_thread=False` for concurrent request handling
-- Piper TTS models for each supported language must be placed under `models/piper_models/<lang>/` as configured in `config.yaml`
-- The server handles SIGINT/SIGTERM gracefully; if shutdown hangs beyond 8 s, the process is force-killed to prevent stale uvicorn workers

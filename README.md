@@ -188,12 +188,6 @@ Utility functions shared across server and tests:
 
 ---
 
-### `tests/CLI.py`
-
-**`CLI`** — Command-line testing interface. Modes: full flow, vision only, audio only, batch (process a folder of images). Uses ANSI colours for readable terminal output. Requires a local `Orchestrator` instance (not the remote client).
-
----
-
 ## Configuration
 
 All model paths, database path, and language settings are defined in `utils/config.yaml`:

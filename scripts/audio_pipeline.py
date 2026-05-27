@@ -385,9 +385,11 @@ class LanguageModel:
             "4. If in doubt, output NO.\n"
             "Output ONLY the single word YES or NO. No other text whatsoever."
         )
+        #Debugging the name verification
+        logger.info(f"Verifying name similarity: on file {db_name!r} vs spoken {spoken_name!r}")
         user = (
-            'Name on file: "' + db_name + '"\n'
-            'Name spoken by driver: "' + spoken_name + '"\n'
+            'Name on file: "' + db_name.lower() + '"\n'
+            'Name spoken by driver: "' + spoken_name.lower() + '"\n'
             "Same person?"
         )
 

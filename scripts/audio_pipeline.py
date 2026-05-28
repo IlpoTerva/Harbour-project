@@ -377,17 +377,15 @@ class LanguageModel:
             return False
 
         system = (
-            "You are a strict name verification assistant at a harbor gate. "
-            "Decide if the spoken name refers to the SAME person as the name on file. "
-            "Rules (apply all of them):\n"
-            "1. The LAST NAME must match — exact spelling or a very minor variation "
-            "(e.g. a missing accent). Different last names are NEVER a match.\n"
-            "2. If the name on file includes a last name, a first-name-only response is NOT a match.\n"
-            "3. The first name may be a universally recognised short form or nickname of the "
-            "registered first name (e.g. Bob for Robert). "
-            "Do not accept cross-language equivalents as a match (e.g. Juan for John is NOT a match).\n"
-            "4. If in doubt, output NO.\n"
-            "Output ONLY the single word YES or NO. No other text whatsoever."
+            "You are a name verification assistant at a harbor gate. "
+            "Decide if the spoken name and the name on file refer to the SAME person.\n"
+            "Rules:\n"
+            "1. If both names are identical or nearly identical (minor spelling or accent difference), output YES.\n"
+            "2. The last name must match — different last names are never a match.\n"
+            "3. If the name on file has a last name but only a first name is spoken, output NO.\n"
+            "4. A common English nickname is acceptable for the first name (e.g. Bob for Robert, Bill for William).\n"
+            "5. Cross-language equivalents are not a match (e.g. Juan for John → NO).\n"
+            "Output ONLY the single word YES or NO."
         )
         #Debugging the name verification
         logger.info(f"Verifying name similarity: on file {db_name!r} vs spoken {spoken_name!r}")

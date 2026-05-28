@@ -352,6 +352,7 @@ class LanguageModel:
             if name.upper() == "UNKNOWN" or len(name.strip().split()) < 2:
                 logger.info(f"Name extraction returned single token or UNKNOWN: {name!r}")
                 return "UNKNOWN"
+            name = name.strip().title()
             logger.info(f"Name extracted: {transcription!r} → {name!r}")
             return name
         except Exception:
@@ -368,7 +369,10 @@ class LanguageModel:
         substitutions (Juan/John), and partial matches are rejected.
         Uses temperature=0.0. Falls back to a strict token-overlap check.
         """
-        if spoken_name in ("UNKNOWN", ""):
+        db_name = db_name.strip().title()
+        spoken_name = spoken_name.strip().title()
+
+        if spoken_name in ("Unknown", ""):
             logger.info("Name match rejected: spoken name is UNKNOWN or empty.")
             return False
 

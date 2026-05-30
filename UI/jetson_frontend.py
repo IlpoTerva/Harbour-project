@@ -11,14 +11,19 @@ Run (from the project root):
 import argparse
 import logging
 import os
+import signal
 import sys
 import threading
 from typing import Any, Dict, Optional
 
-import cv2
 import numpy as np
 
-from PySide6.QtCore import Qt, QObject, Signal, Slot
+# PySide6 must be imported (and QApplication created) BEFORE cv2 is imported.
+# OpenCV on Jetson/Ubuntu links against Qt5; importing it before Qt6 is
+# initialised loads two incompatible Qt runtimes and causes heap corruption
+# ("free(): invalid pointer").  cv2 is therefore imported lazily, inside the
+# two methods that need it, after QApplication already exists.
+from PySide6.QtCore import Qt, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QHeaderView,
@@ -28,8 +33,8 @@ from PySide6.QtWidgets import (
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from local_orchestrator import LocalOrchestrator
-from scripts.helpers import read_config
+# LocalOrchestrator (and its transitive cv2 / VisionPipeline imports) must
+# also be imported AFTER QApplication exists — see main() below.
 from i18n import SUPPORTED_LANGS
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
@@ -55,7 +60,7 @@ class _DbSignals(QObject):
 # ── Database dialog ───────────────────────────────────────────────────────────
 
 class DatabaseDialog(QDialog):
-    def __init__(self, orchestrator: LocalOrchestrator, parent=None) -> None:
+    def __init__(self, orchestrator: Any, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Truck Database")
         self.resize(640, 360)
@@ -133,7 +138,7 @@ class DatabaseDialog(QDialog):
 class JetsonGUI(QMainWindow):
     DISPLAY_SIZE = (400, 300)
 
-    def __init__(self, orchestrator: LocalOrchestrator) -> None:
+    def __init__(self, orchestrator: Any) -> None:
         super().__init__()
         self.orchestrator = orchestrator
         self.orchestrator.on_vision_result = self._on_vision_update_from_thread
@@ -281,9 +286,9 @@ class JetsonGUI(QMainWindow):
     # ── Image display ─────────────────────────────────────────────────────────
 
     def _display_image(self, image: np.ndarray) -> None:
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        rgb = np.ascontiguousarray(image[:, :, ::-1])  # BGR → RGB without cv2
         h, w, ch = rgb.shape
-        qt_image = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        qt_image = QImage(rgb.tobytes(), w, h, ch * w, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(qt_image)
         scaled = pixmap.scaled(
             self.DISPLAY_SIZE[0], self.DISPLAY_SIZE[1],
@@ -305,6 +310,7 @@ class JetsonGUI(QMainWindow):
         )
         if not path:
             return
+        import cv2  # noqa: PLC0415 — lazy: must run after QApplication exists
         raw_image = cv2.imread(path)
         if raw_image is None:
             self._slot_log(f"Failed to read image: {path}")
@@ -347,21 +353,33 @@ def main() -> None:
 
     app = QApplication(sys.argv)
 
+    # Allow Ctrl+C to reach Python: install handler + timer so Qt yields periodically
+    signal.signal(signal.SIGINT, lambda *_: QApplication.quit())
+    sigint_timer = QTimer()
+    sigint_timer.start(200)
+    sigint_timer.timeout.connect(lambda: None)
+
     splash = QLabel("Loading models, please wait…")
     splash.setAlignment(Qt.AlignCenter)
     splash.setWindowTitle("Harbour Agent")
-    splash.setMinimumSize(320, 90)
+    splash.resize(320, 90)
     splash.setStyleSheet("font-size: 14px; padding: 20px;")
     splash.show()
     app.processEvents()
 
+    # Import cv2-dependent code HERE — after QApplication exists — so Qt6 is
+    # fully initialised before OpenCV's Qt5 linkage is loaded into the process.
+    from local_orchestrator import LocalOrchestrator  # noqa: PLC0415
+    from scripts.helpers import read_config            # noqa: PLC0415
+
     config = read_config(args.config)
     orchestrator = LocalOrchestrator(config=config, default_language=args.language)
 
-    splash.close()
-
+    # Show main window before closing splash so Qt never sees "no windows open"
+    # (quitOnLastWindowClosed would otherwise queue a quit before app.exec() starts)
     window = JetsonGUI(orchestrator=orchestrator)
     window.show()
+    splash.close()
 
     app.aboutToQuit.connect(orchestrator.close)
     sys.exit(app.exec())

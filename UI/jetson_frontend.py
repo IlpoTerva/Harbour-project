@@ -18,11 +18,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-# PySide6 must be imported (and QApplication created) BEFORE cv2 is imported.
-# OpenCV on Jetson/Ubuntu links against Qt5; importing it before Qt6 is
-# initialised loads two incompatible Qt runtimes and causes heap corruption
-# ("free(): invalid pointer").  cv2 is therefore imported lazily, inside the
-# two methods that need it, after QApplication already exists.
+
 from PySide6.QtCore import Qt, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
